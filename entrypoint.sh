@@ -22,6 +22,10 @@ ENV_FILE="${GASTOWN_HOME}/.env"
 GT_BOT_DIR="${GASTOWN_HOME}/bot"
 GT_BOT_LOG="${GASTOWN_HOME}/logs/gt-bot.log"
 GT_BOT_PID="${GASTOWN_HOME}/logs/gt-bot.pid"
+GT_START_LOG="${GASTOWN_HOME}/logs/gt-start.log"
+GT_START_PID="${GASTOWN_HOME}/logs/gt-start.pid"
+MAYOR_SESSION="hq-mayor"
+MAYOR_WAIT_SECONDS="${MAYOR_WAIT_SECONDS:-30}"
 
 log()  { printf '\033[36m[gastown]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[gastown]\033[0m %s\n' "$*" >&2; }
@@ -157,7 +161,85 @@ stop_gt_bot() {
     fi
 }
 
-trap 'stop_gt_bot; stop_dolt' EXIT
+# Create (or refresh) the Gas Town HQ at /gastown so `gt mail send mayor/`
+# and friends have a workspace to operate in. Idempotent via `--force` —
+# which re-runs install in an existing HQ without clobbering town.json or
+# rigs.json, so this is safe on every boot.
+ensure_hq() {
+    if [[ -f "${GASTOWN_HOME}/CLAUDE.md" ]]; then
+        log "HQ already installed at ${GASTOWN_HOME}."
+        return 0
+    fi
+
+    log "Installing Gas Town HQ at ${GASTOWN_HOME}..."
+    if ! gt install "${GASTOWN_HOME}" \
+            --name gastown \
+            --dolt-port "${DOLT_PORT}" \
+            --force; then
+        die "gt install failed — see output above. The stack will not be usable until this is fixed."
+    fi
+
+    if [[ ! -f "${GASTOWN_HOME}/CLAUDE.md" ]]; then
+        die "gt install returned 0 but ${GASTOWN_HOME}/CLAUDE.md is missing."
+    fi
+    log "HQ ready."
+}
+
+# Launch Deacon + Mayor via `gt start`, in the background so tmux sessions
+# spawn and we can tail the daemon's logs alongside Dolt/gt-bot. We wait
+# briefly for the Mayor tmux session to show up — if it doesn't, we warn
+# rather than die, so the daemon stays up and the user can investigate.
+start_mayor() {
+    if tmux has-session -t "${MAYOR_SESSION}" 2>/dev/null; then
+        log "Mayor session '${MAYOR_SESSION}' already running."
+        return 0
+    fi
+
+    log "Launching Deacon + Mayor via gt start..."
+    (
+        cd "${GASTOWN_HOME}"
+        nohup gt start >"${GT_START_LOG}" 2>&1 &
+        echo $! >"${GT_START_PID}"
+    )
+
+    local waited=0
+    while (( waited < MAYOR_WAIT_SECONDS )); do
+        if tmux has-session -t "${MAYOR_SESSION}" 2>/dev/null; then
+            log "Mayor is up (tmux session '${MAYOR_SESSION}')."
+            return 0
+        fi
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+
+    warn "Mayor session '${MAYOR_SESSION}' did not appear within ${MAYOR_WAIT_SECONDS}s."
+    warn "Check ${GT_START_LOG} and run \`gt-wizard verify\` once it settles."
+}
+
+# Graceful shutdown: prefer `gt shutdown` so polecats + worktrees are cleaned
+# up properly. Fall back to killing the `gt start` pid and any Mayor tmux
+# session directly if shutdown isn't available or times out.
+stop_mayor() {
+    if command -v gt >/dev/null 2>&1 && [[ -f "${GASTOWN_HOME}/CLAUDE.md" ]]; then
+        log "Stopping Gas Town (gt shutdown)..."
+        (cd "${GASTOWN_HOME}" && gt shutdown --yes) 2>/dev/null || \
+            warn "gt shutdown failed — falling back to direct kill."
+    fi
+
+    if [[ -f "${GT_START_PID}" ]]; then
+        local pid; pid="$(cat "${GT_START_PID}")"
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+        rm -f "${GT_START_PID}"
+    fi
+
+    if tmux has-session -t "${MAYOR_SESSION}" 2>/dev/null; then
+        tmux kill-session -t "${MAYOR_SESSION}" 2>/dev/null || true
+    fi
+}
+
+trap 'stop_mayor; stop_gt_bot; stop_dolt' EXIT
 
 case "${MODE}" in
     wizard)
@@ -173,10 +255,19 @@ case "${MODE}" in
         ensure_dirs
         ensure_env_file
         sync_skills_to_host
+        # Order matters:
+        #   1. Dolt — everything else needs it.
+        #   2. ensure_hq — `gt install` stamps the workspace on Dolt and must
+        #      come before Mayor tries to read it. Depends on Dolt only.
+        #   3. gt-bot — needs Dolt for its own gt_bot DB, does NOT need HQ.
+        #   4. Mayor — needs HQ to exist; is the thing gt-bot mails into.
         start_dolt
+        ensure_hq
         start_gt_bot
-        log "Daemon mode — tailing Dolt + gt-bot logs. Ctrl+C to exit."
-        exec tail -F "${DOLT_LOG}" "${GT_BOT_LOG}" 2>/dev/null || exec tail -F "${DOLT_LOG}"
+        start_mayor
+        log "Daemon mode — tailing Dolt + gt-bot + gt-start logs. Ctrl+C to exit."
+        touch "${DOLT_LOG}" "${GT_BOT_LOG}" "${GT_START_LOG}"
+        exec tail -F "${DOLT_LOG}" "${GT_BOT_LOG}" "${GT_START_LOG}"
         ;;
     shell)
         ensure_dirs

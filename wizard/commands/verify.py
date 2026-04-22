@@ -1,11 +1,24 @@
-"""`gt-wizard verify` — sanity checks before starting agents.
+"""`gt-wizard verify` — sanity checks before declaring install success.
 
-Catches the most common "stuck at install" problems:
-  - `.env` exists and has the keys we expect
-  - `GT_BOT_TOKEN` is set and well-formed (required)
-  - TeleTalk / Crow tokens, if set, are well-formed (optional)
-  - Claude credentials are mounted and non-empty
-  - Dolt server is reachable on the configured port
+This runs after the skill claims the stack is up, so the checks must be
+strong enough that "verify green" implies "gt mail send mayor/ will
+actually work." The earlier version only checked tokens + Claude auth; that
+let several users declare success on containers whose HQ had never been
+created and whose Mayor was never started. The additions below close that
+gap.
+
+Required checks (failing any of these fails the whole verify):
+  - .env keys present and well-formed
+  - Claude auth available (ANTHROPIC_API_KEY or ~/.claude mount)
+  - Dolt TCP port open on localhost
+  - Workspace exists: /gastown/CLAUDE.md is readable
+  - gt_bot DB exists (via `dolt sql` if the CLI is available, TCP otherwise)
+  - gt-bot HTTP port 3335 is listening
+  - Mayor tmux session is alive (or `gt mayor status --running` == true)
+  - End-to-end: `gt mail send mayor/` succeeds against the live HQ
+
+Optional (warn only):
+  - TeleTalk / Crow tokens, if set, must be well-formed.
 """
 
 from __future__ import annotations
@@ -13,7 +26,10 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import socket
+import subprocess
+import time
 from pathlib import Path
 
 from lib import ui
@@ -37,9 +53,18 @@ OPTIONAL_KEYS = {
     "CROW_BOT_TOKEN": ("Telegram token for Crow (optional add-on)", _TOKEN_RE),
 }
 
+GASTOWN_HOME = Path(os.environ.get("GASTOWN_HOME", "/gastown"))
+GT_BOT_PORT = int(os.environ.get("GT_BOT_PORT", "3335"))
+MAYOR_SESSION = "hq-mayor"
+
 
 def register(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quiet", action="store_true", help="Only print failures.")
+    parser.add_argument(
+        "--skip-mail",
+        action="store_true",
+        help="Skip the end-to-end `gt mail send` check (avoids creating beads).",
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -47,6 +72,8 @@ def run(args: argparse.Namespace) -> int:
     failures = 0
 
     env = EnvFile.load()
+
+    # --- Required env vars ------------------------------------------------
     for key, (label, pattern) in REQUIRED_KEYS.items():
         value = env.get(key) or ""
         if not value:
@@ -58,6 +85,7 @@ def run(args: argparse.Namespace) -> int:
         elif not args.quiet:
             ui.success(f"{key} OK.")
 
+    # --- Optional env vars ------------------------------------------------
     for key, (label, pattern) in OPTIONAL_KEYS.items():
         value = env.get(key) or ""
         if not value:
@@ -65,13 +93,12 @@ def run(args: argparse.Namespace) -> int:
                 ui.info(f"{key} not set ({label}) — OK, this add-on is optional.")
             continue
         if not pattern.match(value):
-            # A garbage value is worth flagging even though the key is optional —
-            # it means the user tried and fat-fingered it.
-            ui.error(f"{key} is set but doesn't look valid ({label}).")
-            failures += 1
+            # Garbage value → warn but do NOT fail (add-on is optional).
+            ui.warn(f"{key} is set but doesn't look valid ({label}).")
         elif not args.quiet:
             ui.success(f"{key} OK (optional add-on enabled).")
 
+    # --- Claude auth ------------------------------------------------------
     anthropic_set = bool(env.get("ANTHROPIC_API_KEY") or "")
     claude_dir = Path(os.path.expanduser("~/.claude"))
     claude_ok = claude_dir.exists() and any(claude_dir.iterdir())
@@ -89,10 +116,11 @@ def run(args: argparse.Namespace) -> int:
         )
         failures += 1
 
+    # --- Dolt TCP ---------------------------------------------------------
     dolt_port = int(os.environ.get("DOLT_PORT", "3307"))
     if _port_open("127.0.0.1", dolt_port):
         if not args.quiet:
-            ui.success(f"Dolt reachable on port {dolt_port}.")
+            ui.success(f"Dolt reachable on 127.0.0.1:{dolt_port}.")
     else:
         ui.error(
             f"Dolt is not reachable on 127.0.0.1:{dolt_port}. Start the container "
@@ -100,6 +128,68 @@ def run(args: argparse.Namespace) -> int:
         )
         failures += 1
 
+    # --- Workspace (HQ) exists -------------------------------------------
+    claude_md = GASTOWN_HOME / "CLAUDE.md"
+    if claude_md.is_file():
+        if not args.quiet:
+            ui.success(f"HQ present: {claude_md} readable.")
+    else:
+        ui.error(
+            f"HQ missing: {claude_md} not found. Run "
+            "`docker compose exec gastown gt-wizard install` to create it."
+        )
+        failures += 1
+
+    # --- gt_bot DB exists -------------------------------------------------
+    if _gt_bot_db_exists(dolt_port):
+        if not args.quiet:
+            ui.success("gt_bot database exists on Dolt.")
+    else:
+        ui.error(
+            "gt_bot database not found. The entrypoint runs `gt-bot init` on "
+            "boot — check `docker compose logs gastown | grep gt-bot`."
+        )
+        failures += 1
+
+    # --- gt-bot HTTP listener --------------------------------------------
+    if _port_open("127.0.0.1", GT_BOT_PORT):
+        if not args.quiet:
+            ui.success(f"gt-bot listening on 127.0.0.1:{GT_BOT_PORT}.")
+    else:
+        ui.error(
+            f"gt-bot is not listening on 127.0.0.1:{GT_BOT_PORT}. "
+            "Check `docker compose logs gastown | grep gt-bot`."
+        )
+        failures += 1
+
+    # --- Mayor session is up ---------------------------------------------
+    if _mayor_is_up():
+        if not args.quiet:
+            ui.success(f"Mayor session `{MAYOR_SESSION}` is alive.")
+    else:
+        ui.error(
+            "Mayor tmux session not found. Run "
+            "`docker compose exec gastown gt-wizard start`."
+        )
+        failures += 1
+
+    # --- End-to-end mail send --------------------------------------------
+    if args.skip_mail:
+        if not args.quiet:
+            ui.info("Skipping end-to-end mail check (--skip-mail).")
+    else:
+        ok, cmd = _mail_roundtrip()
+        if ok:
+            if not args.quiet:
+                ui.success(f"`gt mail send mayor/` works. ({cmd})")
+        else:
+            ui.error(
+                "`gt mail send mayor/` failed — the full pipeline is not healthy. "
+                f"Command: {cmd}"
+            )
+            failures += 1
+
+    # --- Verdict ----------------------------------------------------------
     if failures:
         ui.error(f"{failures} check(s) failed.")
         return 1
@@ -114,3 +204,67 @@ def _port_open(host: str, port: int, timeout: float = 1.5) -> bool:
             return True
     except OSError:
         return False
+
+
+def _gt_bot_db_exists(dolt_port: int) -> bool:
+    """Strong check: shell out to `dolt sql`. Weak fallback: TCP only."""
+    if shutil.which("dolt"):
+        try:
+            proc = subprocess.run(
+                [
+                    "dolt",
+                    "--host", "127.0.0.1",
+                    "--port", str(dolt_port),
+                    "--user", "root",
+                    "--no-tls",
+                    "--use-db", "gt_bot",
+                    "sql", "-q", "SHOW TABLES",
+                ],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            return proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    # No dolt CLI — we can at least confirm the port is up. Not as strong.
+    return _port_open("127.0.0.1", dolt_port)
+
+
+def _mayor_is_up() -> bool:
+    if shutil.which("tmux"):
+        rc = subprocess.run(
+            ["tmux", "has-session", "-t", MAYOR_SESSION],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        ).returncode
+        if rc == 0:
+            return True
+    # Fall back to asking gt directly — more reliable across session-naming
+    # tweaks but depends on gt being configured.
+    try:
+        proc = subprocess.run(
+            ["gt", "mayor", "status", "--running"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return proc.stdout.strip().lower() == "true"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _mail_roundtrip() -> tuple[bool, str]:
+    """Send a test mail to mayor/. Returns (ok, human-readable command)."""
+    subject = f"verify-{int(time.time())}"
+    body = "wizard verify test"
+    cmd = ["gt", "mail", "send", "mayor/", "-s", subject, "--stdin"]
+    display = f"echo {body!r} | gt mail send mayor/ -s {subject} --stdin"
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=body,
+            text=True,
+            cwd=str(GASTOWN_HOME) if GASTOWN_HOME.is_dir() else None,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False, display
+    return proc.returncode == 0, display

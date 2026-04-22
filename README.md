@@ -16,7 +16,7 @@ cd gastown-starter
 claude   # then, inside Claude Code, run: /install-gastown
 ```
 
-The `/install-gastown` skill walks you through the rest — creating a single Telegram bot for gt-bot, wiring up Claude auth, and booting Mayor. You can also run the underlying CLI directly: `./wizard/gt-wizard init`.
+The `/install-gastown` skill walks you through the rest — creating a single Telegram bot for gt-bot, wiring up Claude auth, and booting Mayor. When `docker compose up -d` finishes, Dolt, gt-bot, the HQ (at `/gastown`), and Mayor are all already running; `gt-wizard start` is idempotent and safe to re-run. You can also drive the underlying CLI directly: `./wizard/gt-wizard init`.
 
 ## Prerequisites (install on your host, not in the container)
 
@@ -31,7 +31,8 @@ Linux is required for v0. The installer will refuse to run on macOS or Windows �
 
 After onboarding completes:
 
-- **Mayor** — the town's coordinator agent. Listens for dispatch, routes work, talks back via beads mail.
+- **Mayor** — the town's coordinator agent. Listens for dispatch, routes work, talks back via beads mail. Boots automatically from `entrypoint.sh` (daemon mode) once the HQ is installed; `gt-wizard start` runs `gt install` + `gt start` for anyone driving the wizard manually.
+- **HQ at `/gastown`** — the Gas Town workspace root inside the container, stamped by `gt install` on first boot. Contains `CLAUDE.md`, `mayor/`, and `.beads/`. Required for `gt mail send mayor/` and friends to work.
 - **gt-bot** — Gas Town's default Telegram bridge. Forwards authorized Telegram DMs to Mayor as `gt mail` + `gt nudge`, and posts Mayor's replies back to you. Starts automatically from `entrypoint.sh`.
 - **TeleTalk** *(optional)* — a Telegram bot that relays richer conversational chat to/from Claude agents. Only runs if `TELETALK_BOT_TOKEN` is set.
 - **Crow** *(optional)* — a Telegram bot for operational / status notifications. Only runs if `CROW_BOT_TOKEN` is set.

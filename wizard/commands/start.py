@@ -1,90 +1,125 @@
-"""`gt-wizard start` — launch Mayor, TeleTalk, and Crow.
+"""`gt-wizard start` — install the HQ (if needed) and launch Mayor + Deacon.
 
-v0 strategy: rather than fork/exec these processes ourselves (they each have
-their own lifecycle and logging expectations), we print the exact commands
-the user (or the Claude skill) should run in separate shells. This keeps the
-wizard understandable and avoids half-baked process supervision.
+Previously this command only *printed* commands for the user to run in three
+shells. After end-user testing we learned that was too easy to miss: the
+skill would declare success while Mayor was never actually started. Now we
+actually run `gt install` and `gt start` on the user's behalf, then wait for
+the Mayor tmux session to come up before returning.
 
-Follow-ups in hq-1xb track moving to a proper supervisor (`supervisord`,
-`systemd`, or a small Python orchestrator) once the primitives are stable.
+TeleTalk and Crow, when enabled, still run as separate containers / processes
+(see docs/first-rig.md). This command only owns the in-container Mayor +
+Deacon startup path.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import time
+from pathlib import Path
 
 from lib import ui
 
+from . import install as cmd_install
+
 NAME = "start"
-HELP = "Print the commands to launch Mayor, TeleTalk, and Crow."
+HELP = "Install the HQ if missing, then launch Deacon + Mayor."
+
+MAYOR_SESSION = "hq-mayor"
+MAYOR_WAIT_SECONDS = 30
 
 
 def register(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--target",
-        choices=["all", "mayor", "teletalk", "crow"],
-        default="all",
-        help="Which agent to print launch instructions for.",
+        "--path",
+        default=os.environ.get("GASTOWN_HOME", "/gastown"),
+        help="HQ path (default: $GASTOWN_HOME or /gastown).",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Pass --all to `gt start` (also starts Witnesses + Refineries).",
     )
 
 
 def run(args: argparse.Namespace) -> int:
-    ui.header("Launching Gas Town")
+    ui.header("Starting Gas Town")
 
-    ui.info(
-        "Each agent runs as a Claude Code session driven by `gt`. Open a "
-        "separate tmux pane / terminal for each, or use `gt sling` to have "
-        "Mayor spawn them."
-    )
+    hq = Path(args.path)
+    claude_md = hq / "CLAUDE.md"
 
-    if args.target in ("all", "mayor"):
-        _print_mayor()
-    if args.target in ("all", "teletalk"):
-        _print_teletalk()
-    if args.target in ("all", "crow"):
-        _print_crow()
+    if not claude_md.is_file():
+        ui.info(f"No HQ at {hq} — running `gt-wizard install` first.")
+        install_args = argparse.Namespace(
+            path=str(hq),
+            name="gastown",
+            dolt_port=os.environ.get("DOLT_PORT", "3307"),
+        )
+        rc = cmd_install.run(install_args)
+        if rc != 0:
+            ui.error("HQ install failed — cannot start Mayor.")
+            return rc
+    else:
+        ui.success(f"HQ detected at {hq}.")
 
-    ui.header("After Mayor is up")
-    ui.info(
-        "Send Mayor its first instruction over TeleTalk — for example, "
-        '`"create a new rig called hello and file a bead to say hi"`. Mayor '
-        "will route the work to a fresh polecat and you should see it land in "
-        "the beads feed on the host."
-    )
+    cmd = ["gt", "start"]
+    if args.all:
+        cmd.append("--all")
 
+    ui.info(f"Running (cwd={hq}): " + " ".join(cmd))
+    try:
+        proc = subprocess.run(cmd, cwd=str(hq), check=False)
+    except FileNotFoundError:
+        ui.error("`gt` is not on PATH.")
+        return 1
+
+    if proc.returncode != 0:
+        ui.error(f"`gt start` exited with code {proc.returncode}.")
+        return proc.returncode
+
+    if not _wait_for_mayor(MAYOR_WAIT_SECONDS):
+        ui.warn(
+            f"Mayor tmux session `{MAYOR_SESSION}` did not appear within "
+            f"{MAYOR_WAIT_SECONDS}s. Check `gt agents list` and "
+            f"`docker compose logs gastown`."
+        )
+        return 1
+
+    ui.success(f"Mayor is up (tmux session `{MAYOR_SESSION}`).")
+
+    ui.header("Next steps")
+    ui.info("• `docker compose exec gastown gt agents` — list live agent sessions.")
+    ui.info("• `docker compose exec gastown gt-wizard verify` — end-to-end health check.")
+    ui.info("• DM gt-bot on Telegram with `hello mayor` — confirm the round trip.")
+    ui.info("• `docker compose exec gastown bash` — drop into a shell inside the HQ.")
     return 0
 
 
-def _print_mayor() -> None:
-    ui.header("Mayor")
-    print(
-        """
-    # In a dedicated shell inside the container:
-    gt sling mayor
-    """
-    )
-
-
-def _print_teletalk() -> None:
-    ui.header("TeleTalk")
-    print(
-        """
-    # Vendored source lives at /opt/teletalk. The wizard writes its .env
-    # automatically — see `gt-wizard setup-telegram` to rotate tokens.
-    cd /opt/teletalk
-    pnpm install --frozen-lockfile  # first run only
-    pnpm start
-    """
-    )
-
-
-def _print_crow() -> None:
-    ui.header("Crow")
-    print(
-        """
-    # Vendored source lives at /opt/crow. Similar shape to TeleTalk.
-    cd /opt/crow
-    pnpm install --frozen-lockfile  # first run only
-    pnpm start
-    """
-    )
+def _wait_for_mayor(timeout: int) -> bool:
+    """Poll `tmux has-session -t hq-mayor` until it succeeds or we time out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            rc = subprocess.run(
+                ["tmux", "has-session", "-t", MAYOR_SESSION],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+        except FileNotFoundError:
+            # No tmux — fall back to asking gt.
+            try:
+                out = subprocess.run(
+                    ["gt", "mayor", "status", "--running"],
+                    capture_output=True, text=True, check=False,
+                )
+                if out.stdout.strip().lower() == "true":
+                    return True
+            except FileNotFoundError:
+                return False
+        else:
+            if rc == 0:
+                return True
+        time.sleep(1)
+    return False
