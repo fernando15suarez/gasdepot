@@ -29,21 +29,46 @@ grep -E '^GT_BOT_TOKEN=.+' .env
 ```
 If it is populated, skip to step 3.
 
-### 2. Ask the user for a BotFather token
+### 2. Collect the BotFather token AND the operator chat id
 
-This is one of the few places you stop for the user.
+Two user interactions here — the rest of step 2 you do yourself.
 
-Say something like: *"Open Telegram, message @BotFather, run `/newbot`, pick a name, and paste the token it hands back. Format is `digits:letters-and-dashes`."*
+**2a. Token.** Say: *"Open Telegram, message @BotFather, run `/newbot`, pick a name, and paste the token it hands back. Format is `digits:letters-and-dashes`."*
 
-When they paste it, validate it matches `^\d{6,}:[A-Za-z0-9_-]{20,}$`. If not, ask for it again.
+When they paste it, validate against `^\d{6,}:[A-Za-z0-9_-]{20,}$`. If not, ask again.
 
-Write it to `.env` in place:
+Write it to `.env` — pass the token via an env var, NEVER echo it unmasked:
 ```bash
-sed -i 's|^GT_BOT_TOKEN=.*|GT_BOT_TOKEN='"$TOKEN"'|' .env
+TOKEN='<token>' && \
+  grep -q '^GT_BOT_TOKEN=' .env \
+    && sed -i "s|^GT_BOT_TOKEN=.*|GT_BOT_TOKEN=${TOKEN}|" .env \
+    || echo "GT_BOT_TOKEN=${TOKEN}" >> .env
 ```
-(or append if the key is missing). Do NOT paste the token into the user's terminal unmasked — pass it via an environment variable in your bash command.
 
-**Operator chat id is auto-detected** — the entrypoint polls Telegram's `getUpdates` on first boot and fills `OPERATOR_TELEGRAM_CHAT_ID` the first time the user messages the bot. You do not need to ask for it.
+**2b. Tell the user to message the bot.** Say: *"Now open Telegram, find the bot you just created (the username BotFather gave you), and send it ANY message — `hello` is fine. Let me know when you've sent it."*
+
+Wait for the user to confirm (e.g. they say "sent", "done", "ok").
+
+**2c. You pull their chat id from Telegram's getUpdates.** Run:
+```bash
+TOKEN=$(grep '^GT_BOT_TOKEN=' .env | cut -d= -f2-) && \
+  curl -fsSL "https://api.telegram.org/bot${TOKEN}/getUpdates" \
+    | jq -r '[.result[] | (.message, .edited_message, .channel_post)? | select(.!=null) | .chat.id] | last // empty'
+```
+
+That prints the chat id of the most recent message sent to the bot. If it's empty:
+- Telegram's getUpdates window may have rolled over (updates expire after 24h or when a webhook is set). Have them send another message and re-run.
+- If still empty after a second try, check that the token is valid: `curl -fsS "https://api.telegram.org/bot${TOKEN}/getMe"` should return `"ok":true`.
+
+Once you have a numeric chat id (usually 8+ digits, may be negative for groups), write it to `.env`:
+```bash
+CHAT_ID='<id>' && \
+  grep -q '^OPERATOR_TELEGRAM_CHAT_ID=' .env \
+    && sed -i "s|^OPERATOR_TELEGRAM_CHAT_ID=.*|OPERATOR_TELEGRAM_CHAT_ID=${CHAT_ID}|" .env \
+    || echo "OPERATOR_TELEGRAM_CHAT_ID=${CHAT_ID}" >> .env
+```
+
+Tell the user: *"Got it. Your operator chat id is `<id>`. Building the container now."*
 
 ### 3. Build the image
 
@@ -51,31 +76,27 @@ Run `docker compose build`. This takes 3–8 minutes on a first build; show the 
 
 ### 4. Bring up the stack
 
-Run `docker compose up -d`. The default CMD is `daemon`, so this starts Dolt → auto-detects operator chat id → installs the HQ → starts gt-bot → launches Deacon + Mayor. No extra shells required.
+Run `docker compose up -d`. Default CMD is `daemon`, which starts Dolt → configures Dolt identity → installs the HQ → starts gt-bot → launches Deacon + Mayor. `OPERATOR_TELEGRAM_CHAT_ID` is already in `.env` from step 2c, so the entrypoint seeds the bot's admin row on first boot.
 
-### 5. Tail the startup logs until gt-bot is waiting
+### 5. Wait for Mayor to come up
 
-Run `docker compose logs -f gastown` in the foreground and watch for the line:
+Tail the logs and watch for the boot milestones. One easy way:
+```bash
+timeout 90 docker compose logs -f gastown | sed -n '/Mayor is up/q; p'
+```
+That exits as soon as the line `Mayor is up (tmux session 'hq-mayor')` shows (or after 90s). Total boot time is typically 30–60s after `up -d`.
 
-> `Auto-detecting operator chat id — open Telegram and message your bot within 90s.`
+If the 90s timeout expires without `Mayor is up`, pull the tail and explain what's wrong:
+```bash
+docker compose logs --tail=200 gastown
+```
+Look for errors from `ensure_hq`, `start_gt_bot`, or `start_mayor`. Common culprits: stale Dolt volume (nuke with `docker compose down -v` then rebuild), dolt identity not configured (should be handled by `ensure_dolt_identity`, but check), or port 3307 conflict on the host.
 
-As soon as you see it, break out of `logs -f` (`Ctrl+C` inside the tool) and tell the user:
-
-> "The bot is listening. Open Telegram, find the bot you just created, and send it any message (for example: `hello mayor`)."
-
-Then re-attach to logs and watch for `Detected operator chat id: <id>. Writing to .env.` — that confirms their message was captured.
-
-If the 90s window expires before the user messages the bot (you'll see the "No message received within 90s" warning), ask the user to message the bot, then run `docker compose restart gastown` and repeat step 5.
-
-### 6. Wait for Mayor to come up
-
-Still watching the logs, look for `Mayor is up (tmux session 'hq-mayor')`. That takes another 10–20 seconds after the HQ install.
-
-### 7. Verify
+### 6. Verify
 
 Run `docker compose exec gastown gt-wizard verify`. Read each ✓ and ✗ aloud. All REQUIRED checks must be green — including HQ present, Mayor session, and the end-to-end `gt mail send` round-trip. If anything is red, do not declare success. Investigate it.
 
-### 8. End-to-end confirmation
+### 7. End-to-end confirmation
 
 This is the other place you stop for the user.
 
