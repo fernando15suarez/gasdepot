@@ -1,0 +1,70 @@
+# Gas Town Starter Kit — single-service compose.
+#
+# Why single-service:
+#   - Starter kit audience is "friends new to AI tooling". One process to reason
+#     about is simpler than a multi-service topology.
+#   - Dolt is fragile; coupling its lifecycle to the rest of the stack means a
+#     restart is a single `docker compose restart`, not a multi-step recovery.
+#
+# State partitioning (what survives image rebuilds):
+#   - gastown-dolt-data  → beads / mail / identity history (the data plane)
+#   - gastown-repos      → user repos cloned by rigs
+#   - gastown-claude     → ~/.claude inside the container (mirrors host login)
+#   - gastown-logs       → rotated logs from Mayor / TeleTalk / Crow
+#   - ./.env             → bind-mounted so host edits are picked up on restart
+#
+# The bind-mount of ~/.claude from the host is what lets `claude login` on the
+# host flow through to the container without asking users to re-auth.
+
+version: "3.9"
+
+services:
+  gastown:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gastown-starter:latest
+    container_name: gastown
+    hostname: gastown
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
+    # Dolt is reachable from the host for debugging / gt dolt status.
+    ports:
+      - "3307:3307"
+
+    volumes:
+      # Claude credentials — passthrough from host. Read-write so the agent
+      # inside the container can refresh tokens.
+      - type: bind
+        source: ${HOME}/.claude
+        target: /home/gastown/.claude
+
+      # Per-stack data that must survive rebuilds. Declared below.
+      - gastown-dolt-data:/gastown/.dolt-data
+      - gastown-repos:/gastown/repos
+      - gastown-logs:/gastown/logs
+
+      # Starter-kit `.env` lives on the host so users edit it there.
+      - type: bind
+        source: ./.env
+        target: /gastown/.env
+
+    # Keep the wizard interactive when users `docker compose run` or
+    # `docker compose exec`. The default `up -d` path uses the `daemon` entry
+    # (see entrypoint.sh) instead of the interactive wizard.
+    stdin_open: true
+    tty: true
+
+    # Dolt's goroutine dumps live in the log; `gt dolt status` needs to see
+    # the PID file, so we give the process a predictable working dir.
+    working_dir: /gastown
+
+volumes:
+  gastown-dolt-data:
+  gastown-repos:
+  gastown-logs:

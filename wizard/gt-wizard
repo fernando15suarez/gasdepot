@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Gas Town starter-kit wizard.
+
+A thin argparse dispatcher over the primitive commands in `commands/`. Each
+primitive is idempotent: running `init` twice does not duplicate state, running
+`setup-telegram` twice lets you swap tokens. The Claude `/install-gastown`
+skill orchestrates these primitives conversationally.
+
+Kept deliberately small. If you're tempted to add "framework" here, push the
+logic into a command module instead.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+# Put the wizard package on sys.path so `from lib import ...` works when the
+# script is invoked via its symlink name (`gt-wizard`), not `python3 -m`.
+_WIZARD_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(_WIZARD_ROOT))
+
+from commands import init as cmd_init
+from commands import setup_telegram as cmd_setup_telegram
+from commands import start as cmd_start
+from commands import verify as cmd_verify
+from commands import update as cmd_update  # noqa: F401  (registered below)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gt-wizard",
+        description="Gas Town starter-kit onboarding primitives.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    for module in (cmd_init, cmd_setup_telegram, cmd_start, cmd_verify, cmd_update):
+        sub = subparsers.add_parser(module.NAME, help=module.HELP)
+        module.register(sub)
+        sub.set_defaults(_handler=module.run)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return int(args._handler(args) or 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
