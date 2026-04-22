@@ -31,6 +31,13 @@ services:
     env_file:
       - .env
 
+    # daemon mode runs the full boot sequence (Dolt → HQ install → gt-bot →
+    # Mayor). The Dockerfile's CMD defaults to this too; setting it here
+    # makes the behavior explicit for anyone reading just the compose file.
+    # Override with `docker compose run --rm gastown wizard` for interactive
+    # onboarding, or `... shell` for a bare bash prompt.
+    command: ["daemon"]
+
     # Dolt is reachable from the host for debugging / gt dolt status.
     # gt-bot's HTTP /send + /health API is also exposed so agents on the host
     # can post to http://localhost:3335/send.

@@ -124,16 +124,6 @@ RUN set -eux; \
 RUN npm install -g "@gastown/gt@${GT_VERSION}" \
     && gt --version
 
-# --- claude (Claude Code CLI) ---------------------------------------------
-# The install script now takes the version as a positional arg and ignores
-# CLAUDE_INSTALL_DIR — it always lands in $HOME/.local/bin. This layer runs
-# as root, so that resolves to /root/.local/bin; we symlink into
-# /usr/local/bin so both root and the gastown user can invoke `claude`.
-RUN set -eux; \
-    curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}"; \
-    ln -sf /root/.local/bin/claude /usr/local/bin/claude; \
-    claude --version
-
 # --- non-root user ---------------------------------------------------------
 # All runtime work happens as `gastown` (uid 1000). Matches typical host uid
 # so bind-mounted volumes don't end up root-owned.
@@ -147,6 +137,11 @@ RUN set -eux; \
 # .dolt-data) so that when Docker initializes a named volume on first run,
 # it copies the correct ownership from the image layer. Without this, a
 # fresh named volume mounts as root:root and the gastown user can't write.
+#
+# This block comes BEFORE the claude install so we can run the installer as
+# the gastown user — the script writes to $HOME/.local and ignores any
+# override flags, so installing as root lands the binary at /root/.local
+# which is 0700 and unreadable by gastown.
 RUN set -eux; \
     if getent group 1000 >/dev/null 2>&1; then \
       groupmod -n gastown "$(getent group 1000 | cut -d: -f1)"; \
@@ -161,6 +156,28 @@ RUN set -eux; \
     mkdir -p /gastown/logs /gastown/repos /gastown/.dolt-data \
              /home/gastown/.claude /home/gastown/.config; \
     chown -R gastown:gastown /gastown /home/gastown
+
+# --- claude (Claude Code CLI) ---------------------------------------------
+# Install AS the gastown user so the binary lands in /home/gastown/.local,
+# which is world-traversable (0755 via useradd defaults) unlike /root (0700).
+# The install script ignores CLAUDE_INSTALL_DIR and always writes to
+# $HOME/.local, so the user it runs as determines where it lands.
+USER gastown
+RUN set -eux; \
+    curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}"; \
+    /home/gastown/.local/bin/claude --version
+USER root
+RUN ln -sf /home/gastown/.local/bin/claude /usr/local/bin/claude
+
+# --- claude onboarding seed -----------------------------------------------
+# Pre-accept Claude Code's first-run onboarding so Mayor doesn't block on an
+# interactive theme-picker / OAuth wizard the first time it spawns. Auth
+# credentials still come from the host's ~/.claude bind mount; these flags
+# only cover the UI onboarding state.
+RUN echo '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true}' \
+      > /home/gastown/.claude.json \
+    && chown gastown:gastown /home/gastown/.claude.json \
+    && chmod 600 /home/gastown/.claude.json
 
 # --- vendored sources ------------------------------------------------------
 COPY --from=sources --chown=gastown:gastown /src/teletalk /opt/teletalk
@@ -198,4 +215,7 @@ EXPOSE 3307
 EXPOSE 3335
 
 ENTRYPOINT ["/gastown/entrypoint.sh"]
-CMD ["wizard"]
+# Default to daemon mode so `docker compose up -d` boots the whole stack
+# (Dolt + HQ + gt-bot + Mayor). The interactive wizard is still available
+# via `docker compose run --rm gastown wizard`.
+CMD ["daemon"]
