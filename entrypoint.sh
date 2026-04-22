@@ -156,6 +156,76 @@ start_gt_bot() {
     echo $! >"${GT_BOT_PID}")
 }
 
+# If the user set GT_BOT_TOKEN but not OPERATOR_TELEGRAM_CHAT_ID, poll
+# Telegram's getUpdates so the first message they send to the bot auto-
+# fills the chat id in .env. Needed because default CMD is `daemon`, so
+# the interactive wizard (which also offers this) may never be run.
+# Stdlib-only: curl + jq, both apt-installed in the Dockerfile.
+auto_detect_operator_chat_id() {
+    local token="${GT_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+    if [[ -z "${token}" ]]; then
+        return 0
+    fi
+    if [[ -n "${OPERATOR_TELEGRAM_CHAT_ID:-}" ]]; then
+        return 0
+    fi
+
+    log "Auto-detecting operator chat id — open Telegram and message your bot within 90s."
+    log "(The first message I see from any user becomes OPERATOR_TELEGRAM_CHAT_ID.)"
+
+    local base_url="https://api.telegram.org/bot${token}"
+    local baseline_resp
+    baseline_resp=$(curl -fsS --max-time 10 "${base_url}/getUpdates?offset=-1" 2>/dev/null || true)
+    if [[ -z "${baseline_resp}" ]] || [[ "$(echo "${baseline_resp}" | jq -r '.ok // false')" != "true" ]]; then
+        warn "Could not reach Telegram (bad token or no network). Skipping auto-detect."
+        return 0
+    fi
+    local offset
+    offset=$(( $(echo "${baseline_resp}" | jq -r '(.result | map(.update_id) | max) // 0') + 1 ))
+
+    local deadline
+    deadline=$(( $(date +%s) + 90 ))
+    while (( $(date +%s) < deadline )); do
+        local remaining=$(( deadline - $(date +%s) ))
+        local poll_s=$(( remaining < 25 ? remaining : 25 ))
+        (( poll_s < 1 )) && poll_s=1
+
+        local resp
+        resp=$(curl -fsS --max-time $(( poll_s + 10 )) \
+                    "${base_url}/getUpdates?offset=${offset}&timeout=${poll_s}" 2>/dev/null || true)
+        if [[ -z "${resp}" ]]; then
+            sleep 1
+            continue
+        fi
+
+        local chat_id
+        chat_id=$(echo "${resp}" | jq -r '
+            .result[]? | (.message, .edited_message, .channel_post)?
+            | select(. != null) | .chat.id' | head -n 1)
+        if [[ -n "${chat_id}" && "${chat_id}" != "null" ]]; then
+            log "Detected operator chat id: ${chat_id}. Writing to ${ENV_FILE}."
+            # Append only if the key is not already present (paranoid idempotency).
+            if ! grep -qE '^\s*OPERATOR_TELEGRAM_CHAT_ID\s*=' "${ENV_FILE}"; then
+                printf '\nOPERATOR_TELEGRAM_CHAT_ID=%s\n' "${chat_id}" >> "${ENV_FILE}"
+            else
+                # Replace existing empty value in-place.
+                sed -i "s|^\(\s*OPERATOR_TELEGRAM_CHAT_ID\s*=\).*|\1${chat_id}|" "${ENV_FILE}"
+            fi
+            export OPERATOR_TELEGRAM_CHAT_ID="${chat_id}"
+            return 0
+        fi
+
+        # Advance the offset so we don't reprocess what we just peeked at.
+        local max_seen
+        max_seen=$(echo "${resp}" | jq -r '(.result | map(.update_id) | max) // empty')
+        if [[ -n "${max_seen}" ]]; then
+            offset=$(( max_seen + 1 ))
+        fi
+    done
+
+    warn "No message received within 90s. Set OPERATOR_TELEGRAM_CHAT_ID manually in ${ENV_FILE} and restart the container."
+}
+
 stop_gt_bot() {
     if [[ -f "${GT_BOT_PID}" ]]; then
         local pid; pid="$(cat "${GT_BOT_PID}")"
@@ -272,6 +342,7 @@ case "${MODE}" in
         #   3. gt-bot — needs Dolt for its own gt_bot DB, does NOT need HQ.
         #   4. Mayor — needs HQ to exist; is the thing gt-bot mails into.
         start_dolt
+        auto_detect_operator_chat_id
         ensure_hq
         start_gt_bot
         start_mayor

@@ -1,65 +1,126 @@
 ---
 name: install-gastown
-description: Conversational onboarding for the Gas Town starter kit. Use this skill when the user has just cloned the starter-kit repo and wants to stand up Mayor with gt-bot (the default Telegram bridge). Orchestrates the `wizard/gt-wizard` CLI primitives and answers follow-up questions (Telegram bot token, Docker volume layout, Dolt, Claude auth). Only runs in an environment where the user is sitting in the starter-kit repo.
+description: Autonomous installer for the Gas Town starter kit. Use this skill when the user has just cloned the starter-kit repo and wants to stand up Mayor with gt-bot (the default Telegram bridge). Runs the wizard and docker commands on the user's behalf; only pauses for inputs the user must supply (BotFather token, Telegram message to confirm the round-trip). Only runs in an environment where the user is sitting in the starter-kit repo.
 ---
 
 # install-gastown
 
-You are guiding a user (often new to AI tooling) through installing the Gas Town starter kit on a Linux machine. The repo they are sitting in contains a `Dockerfile`, a `docker-compose.yml`, a `wizard/gt-wizard` CLI, and a `.env.example`. Your job is to get them from a cold clone to a running stack where Mayor can receive Telegram messages via **gt-bot** (the default, bundled bridge) and talk back.
+You are installing the Gas Town starter kit for the user. You are NOT a tutorial — do not print shell commands and wait for the user to type them. **Run them yourself via the Bash tool.** Only stop for the handful of inputs the user uniquely owns (pasting a BotFather token, confirming a Telegram round-trip).
 
-## Before you start
+Tone: short and task-oriented. Narrate what you are about to do in one sentence, run it, summarize the result. If something fails, diagnose and retry before surfacing the error to the user.
 
-- Check that the user is actually in the starter-kit repo: `README.md` should mention "Gas Town Starter Kit" and `wizard/gt-wizard` should be present.
-- Check that Docker and `claude` are on their host: `docker --version`, `which claude`. If either is missing, stop and link them to the prerequisites section of the top-level `README.md`. Do not try to install Docker for them — it requires sudo and host-specific steps.
-- Check they've run `claude login` on the host. Look for a non-empty `~/.claude/` with session files. If missing, have them run `claude login` in a separate terminal and come back.
+## Preflight (all silent unless something is wrong)
 
-## The flow (happy path)
+Run each check; stop with a clear remediation if any fails.
 
-Do these one at a time. After each step, wait for the user to confirm it worked before moving on. If they hit an error, diagnose it before advancing — do not barrel through failures.
+- Confirm you are in the starter-kit repo: `test -f Dockerfile && test -f docker-compose.yml && test -f wizard/gt-wizard`. If missing, tell the user to `cd` to their gasdepot clone.
+- `docker --version` and `which claude` succeed. If Docker is missing, link the user to the prerequisites section of the top-level README.md — do not try to install Docker.
+- `ls ~/.claude` has session files. If missing, tell the user to run `claude login` in another terminal and wait for them to come back.
 
-1. **Copy `.env.example` to `.env`.** The entrypoint does this automatically on first run, but if you're helping them configure *before* starting the container, run: `cp .env.example .env`.
+## The flow
 
-2. **Collect the gt-bot Telegram token.** Walk them through creating **one** Telegram bot with @BotFather — this is gt-bot, Gas Town's default bridge. Paste the token into `GT_BOT_TOKEN` in `.env` (the wizard will prompt for it). If they ask "what's a Telegram bot token?", explain: it's the string BotFather hands back after `/newbot`, formatted like `123456789:ABCdefGHIjklMNOpqrSTUvwxYZ1234567890`. It authenticates the bot with Telegram's API.
-   **No need to look up their chat ID manually.** After they paste the token, the wizard prompts them to send any message to their new bot on Telegram — the wizard polls the Telegram API and auto-fills `OPERATOR_TELEGRAM_CHAT_ID` from that message. The entrypoint seeds this chat as gt-bot's first admin row on boot. If the wizard times out (no message within ~90s), it falls back to manual entry (message `@userinfobot`).
+Do these in order. Do NOT ask the user to run any of these themselves.
 
-   **Optional add-ons.** TeleTalk (`TELETALK_BOT_TOKEN`) and Crow (`CROW_BOT_TOKEN`) are no longer required. If the user wants the richer conversational relay (TeleTalk) or the legacy ops bridge (Crow), they can create extra bots with @BotFather and drop those tokens in later — gt-bot alone is enough to complete install.
+### 1. Prepare `.env`
 
-3. **Build the container.** On the host: `docker compose build`. This installs the pinned toolchain, bakes in the wizard, and pre-installs gt-bot's Node deps. Expect 3–8 minutes on a first build.
+Run `cp -n .env.example .env` (no-clobber). Check whether `GT_BOT_TOKEN` is already set:
+```bash
+grep -E '^GT_BOT_TOKEN=.+' .env
+```
+If it is populated, skip to step 3.
 
-4. **Start the stack.** `docker compose up -d`. The entrypoint starts Dolt, runs the gt-bot wizard + daemon automatically (because `GT_BOT_TOKEN` is set in `.env`), and seeds `OPERATOR_TELEGRAM_CHAT_ID` as the first admin if the permissions table is empty. That is it — one command and gt-bot is already listening. No extra shell needed for the bot.
+### 2. Ask the user for a BotFather token
 
-5. **Run the wizard interactively (optional).** `docker compose exec gastown gt-wizard init`. The entrypoint already did the heavy lifting, but running the wizard by hand is useful if the user skipped `.env` entry and wants to be walked through it, or to re-run `verify`.
+This is one of the few places you stop for the user.
 
-6. **Confirm `.env` is complete.** Run `docker compose exec gastown gt-wizard verify` once. If it reports missing keys (`GT_BOT_TOKEN`, `OPERATOR_TELEGRAM_CHAT_ID`), loop back to step 2 or run `docker compose exec gastown gt-wizard setup-telegram` before continuing. Don't proceed until `verify` at least clears the env-var checks.
+Say something like: *"Open Telegram, message @BotFather, run `/newbot`, pick a name, and paste the token it hands back. Format is `digits:letters-and-dashes`."*
 
-7. **Start Mayor.** `docker compose exec gastown gt-wizard start`. This runs `gt install` to create the HQ (if it isn't already) and then `gt start` to launch Deacon + Mayor. The command waits for Mayor's tmux session to come up and exits non-zero if it doesn't — do not continue until it prints a green "Mayor is up". In daemon-mode containers (`docker compose up -d`) this has already happened on boot; running it again is a no-op.
+When they paste it, validate it matches `^\d{6,}:[A-Za-z0-9_-]{20,}$`. If not, ask for it again.
 
-8. **Verify end-to-end.** Re-run `docker compose exec gastown gt-wizard verify` (now expected to be fully green — including HQ presence, Mayor session, and an actual `gt mail send mayor/` round-trip). Then have the user open Telegram, find their gt-bot, and DM it with something like **"hello mayor"**. gt-bot forwards it as `gt mail` + `gt nudge` to Mayor; Mayor should pick it up and respond via `POST /send` back through gt-bot. Do NOT declare install complete until the user confirms Mayor replied in Telegram — the Dolt/tmux/HTTP checks can all pass while the user still sees nothing in their chat, and that's the real success signal.
+Write it to `.env` in place:
+```bash
+sed -i 's|^GT_BOT_TOKEN=.*|GT_BOT_TOKEN='"$TOKEN"'|' .env
+```
+(or append if the key is missing). Do NOT paste the token into the user's terminal unmasked — pass it via an environment variable in your bash command.
 
-## Common snags (with fixes)
+**Operator chat id is auto-detected** — the entrypoint polls Telegram's `getUpdates` on first boot and fills `OPERATOR_TELEGRAM_CHAT_ID` the first time the user messages the bot. You do not need to ask for it.
 
-- **"Docker can't access ~/.claude"** — the volume mount is read-write but the host directory permissions may block root-in-container. Have the user check `ls -la ~/.claude` and confirm the owner matches their host user.
-- **"Dolt port 3307 in use"** — they likely have a host-level Gas Town install already running. Either stop the host Dolt (`gt dolt stop`) or change `DOLT_PORT` in `.env` and the published port in `docker-compose.yml`.
-- **"gt-bot not responding"** — check `docker compose logs gastown | grep gt-bot`. If it says "no `GT_BOT_TOKEN` set" (or similar), the user forgot to fill in the token in `.env`. Fix the `.env`, then `docker compose up -d` again — the entrypoint will pick up the new token.
-- **"Permissions empty error on start"** — gt-bot refuses to start with zero rows in `gt_bot.permissions`. The entrypoint auto-seeds from `OPERATOR_TELEGRAM_CHAT_ID` on first run, but only if that variable is actually set. Either set it in `.env` and restart the container, or add the row by hand: `docker compose exec gastown /gastown/bot/bin/gt-bot perms add <chat_id> --role admin`.
-- **"Telegram bot doesn't respond" (non-gt-bot)** — if they're using the optional TeleTalk or Crow path, confirm `OPERATOR_TELEGRAM_CHAT_ID` matches the user's own chat ID (not the bot's ID). Verify with `docker compose logs gastown | tail -50`.
-- **"`claude login` lost after rebuild"** — they removed the `~/.claude` volume mount or mounted the wrong path. Check `docker-compose.yml`.
-- **"wizard says ANTHROPIC_API_KEY is better"** — it isn't, for Claude Pro / Max subscribers. Push them toward `claude login`. Per-token billing is only the right call for users who don't have a subscription.
-- **"`gt mail send` fails with 'not in a Gas Town workspace'"** — the HQ was never created at `/gastown`. Run `docker compose exec gastown gt-wizard install` to stamp it, then `gt-wizard start` to bring Mayor up, then re-run `gt-wizard verify`.
-- **"bot receives messages but Mayor never responds"** — gt-bot is alive but Mayor isn't. Run `docker compose exec gastown gt-wizard start` and re-verify. If Mayor still doesn't boot, inspect `docker compose exec gastown tail -n 200 /gastown/logs/gt-start.log`.
+### 3. Build the image
+
+Run `docker compose build`. This takes 3–8 minutes on a first build; show the user the progress stream. If the build fails, read the tail of the output and tell the user what broke — do not barrel on to the next step.
+
+### 4. Bring up the stack
+
+Run `docker compose up -d`. The default CMD is `daemon`, so this starts Dolt → auto-detects operator chat id → installs the HQ → starts gt-bot → launches Deacon + Mayor. No extra shells required.
+
+### 5. Tail the startup logs until gt-bot is waiting
+
+Run `docker compose logs -f gastown` in the foreground and watch for the line:
+
+> `Auto-detecting operator chat id — open Telegram and message your bot within 90s.`
+
+As soon as you see it, break out of `logs -f` (`Ctrl+C` inside the tool) and tell the user:
+
+> "The bot is listening. Open Telegram, find the bot you just created, and send it any message (for example: `hello mayor`)."
+
+Then re-attach to logs and watch for `Detected operator chat id: <id>. Writing to .env.` — that confirms their message was captured.
+
+If the 90s window expires before the user messages the bot (you'll see the "No message received within 90s" warning), ask the user to message the bot, then run `docker compose restart gastown` and repeat step 5.
+
+### 6. Wait for Mayor to come up
+
+Still watching the logs, look for `Mayor is up (tmux session 'hq-mayor')`. That takes another 10–20 seconds after the HQ install.
+
+### 7. Verify
+
+Run `docker compose exec gastown gt-wizard verify`. Read each ✓ and ✗ aloud. All REQUIRED checks must be green — including HQ present, Mayor session, and the end-to-end `gt mail send` round-trip. If anything is red, do not declare success. Investigate it.
+
+### 8. End-to-end confirmation
+
+This is the other place you stop for the user.
+
+Tell them: *"Send one more message to the bot on Telegram now — Mayor should reply. Let me know what you see."*
+
+If Mayor replies: install is complete. Give them the short "What now" list below.
+
+If Mayor does NOT reply within ~30 seconds, do NOT declare success. Collect diagnostics:
+- `docker compose exec gastown tail -n 100 /gastown/logs/gt-bot.log`
+- `docker compose exec gastown tail -n 100 /gastown/logs/gt-start.log`
+- `docker compose exec gastown gt agents`
+
+Read them and explain what you see. Fix it or escalate.
+
+## What now (post-install)
+
+Once Mayor has round-tripped a message, share:
+
+- **Send follow-ups on Telegram.** The bot forwards every authorized message to Mayor.
+- **Inspect the state.** `docker compose exec gastown gt agents` lists live sessions. `docker compose exec gastown gt dolt status` shows the data plane.
+- **Open a shell.** `docker compose exec gastown bash` drops into the container as the `gastown` user.
+- **Next: build a rig.** Suggest "ask Mayor on Telegram to create a rig for <project>". No example rig is pre-scaffolded.
+
+## Common snags (diagnose, do not delegate)
+
+You handle these — do not ask the user to run the fix command.
+
+- **"Docker cannot access ~/.claude"** — the volume mount is read-write but host perms block root-in-container. `ls -la ~/.claude`; if it is owner-restricted, `chmod -R u+rwx,g+rx ~/.claude`.
+- **"Dolt port 3307 in use"** — the host has Gas Town already running. Try `gt dolt stop` on the host. If that is unacceptable (the host Gas Town must stay up), edit `DOLT_PORT` in `.env` and the published port in `docker-compose.yml`, then rebuild.
+- **"gt-bot refuses to start: no rows in gt_bot.permissions"** — the auto-detect didn't catch a message in the 90s window. `docker compose logs gastown | tail -30` will confirm. Restart the container and ask the user to DM the bot the moment you see the auto-detect prompt. Last resort: `docker compose exec gastown /gastown/bot/bin/gt-bot perms add <chat_id> --role admin`.
+- **"`gt mail send` fails with 'not in a Gas Town workspace'"** — HQ missing. `docker compose exec gastown gt-wizard install` stamps it.
+- **"bot receives messages but Mayor never responds"** — Mayor not up. `docker compose exec gastown gt-wizard start` and re-verify. If it still won't boot, read `/gastown/logs/gt-start.log`.
+- **"`claude login` lost after rebuild"** — the ~/.claude bind mount was removed. Check `docker-compose.yml`.
+- **"wizard says ANTHROPIC_API_KEY is better"** — it isn't, for Claude Pro / Max subscribers. Point them at `claude login`.
 
 ## Don't do for them
 
-- Don't try to start Docker Engine, install Claude Code, or fix host system packages — those are prereqs the user owns.
-- Don't `docker compose build` yourself unless they ask — it's slow and you'll blow through their session tokens.
-- Don't edit `.env` directly. Use `gt-wizard setup-telegram` so validation runs.
+- Don't install Docker Engine, Claude Code, or system packages on the host. Those are prereqs the user owns.
+- Don't edit `.env` by hand outside of `sed` replacements to a single key at a time.
+- Don't run `docker compose down -v` unless the user explicitly asks — it nukes their beads DB.
+
+## If stuck
+
+Run `docker compose exec gastown gt-wizard verify` and read its output to the user verbatim. Each check names the fix. Then pull the relevant log tail. If that is not enough, point them at `docs/troubleshooting.md`.
 
 ## After install
 
-Suggest the user's first move: "ask Mayor, over gt-bot, to create a small rig of your choice." For example: *"make a rig called notes, file a bead to sketch the idea, and route it to a polecat."* No example rig is pre-scaffolded — the user invents their first one. Point them at `docs/first-rig.md` for the deeper walkthrough.
-
-## If things are clearly broken
-
-If the user says the install is stuck, run `docker compose exec gastown gt-wizard verify` and read its output to them verbatim. Each check names the fix. Do not guess — the verifier is the source of truth.
-
-Escalate to `docs/troubleshooting.md` for anything beyond the "common snags" list.
+Suggest: *"Ask Mayor, on Telegram, to create a small rig of your choice."* Point them at `docs/first-rig.md` for the deeper walkthrough.
