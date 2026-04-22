@@ -1,0 +1,23 @@
+{
+  "name": "gt-bot",
+  "version": "0.1.0",
+  "description": "gt-bot — Telegram bridge for Gas Town, bundled with gasdepot",
+  "main": "bot.js",
+  "bin": {
+    "gt-bot": "bin/gt-bot"
+  },
+  "scripts": {
+    "start": "node bot.js",
+    "init": "node bin/gt-bot init"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "grammy": "^1.42.0",
+    "mysql2": "^3.11.0"
+  },
+  "author": "",
+  "license": "ISC"
+}

@@ -1,0 +1,155 @@
+#!/usr/bin/env node
+
+// gt-bot CLI — init / start / perms <add|list|remove>
+
+const path = require("path");
+const fs = require("fs");
+
+const BOT_DIR = path.resolve(__dirname, "..");
+
+function usage(exit = 1) {
+  const msg = [
+    "Usage: gt-bot <command> [options]",
+    "",
+    "Commands:",
+    "  init                          Create gt_bot DB + permissions table (idempotent)",
+    "  start                         Start the bot",
+    "  perms add <chat_id> [flags]   Add/update a permission row",
+    "    --role admin|user           (default: user)",
+    "    --rigs <csv>                (default: *)",
+    "    --label <string>            (optional human label)",
+    "  perms list                    List all permissions",
+    "  perms remove <chat_id>        Remove a permission row",
+    "",
+  ].join("\n");
+  process.stdout.write(msg + "\n");
+  process.exit(exit);
+}
+
+function parseFlags(args) {
+  const out = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      const key = a.slice(2);
+      const val = args[i + 1];
+      if (val === undefined || val.startsWith("--")) {
+        out[key] = true;
+      } else {
+        out[key] = val;
+        i++;
+      }
+    } else {
+      positional.push(a);
+    }
+  }
+  return { flags: out, positional };
+}
+
+async function cmdInit() {
+  const { connect } = require(path.join(BOT_DIR, "db.js"));
+  const sqlPath = path.join(BOT_DIR, "migrations", "001_init.sql");
+  const sql = fs.readFileSync(sqlPath, "utf8");
+  const conn = await connect(); // no database — migration creates it
+  try {
+    await conn.query(sql);
+    console.log("Initialized gt_bot database and permissions table.");
+  } finally {
+    await conn.end().catch(() => {});
+  }
+}
+
+async function cmdPermsAdd(args) {
+  const { positional, flags } = parseFlags(args);
+  const chatId = positional[0];
+  if (!chatId) {
+    console.error("Usage: gt-bot perms add <chat_id> [--role admin|user] [--rigs csv] [--label text]");
+    process.exit(1);
+  }
+  const role = flags.role || "user";
+  if (!["admin", "user"].includes(role)) {
+    console.error(`Invalid role "${role}" (must be admin or user)`);
+    process.exit(1);
+  }
+  const rigs = flags.rigs || "*";
+  const label = flags.label || null;
+
+  const { addPermission } = require(path.join(BOT_DIR, "config.js"));
+  await addPermission({ chatId, role, rigs, label });
+  console.log(`Added/updated permission for chat ${chatId} (role=${role}, rigs=${rigs}${label ? `, label=${JSON.stringify(label)}` : ""}).`);
+}
+
+async function cmdPermsList() {
+  const { listPermissions } = require(path.join(BOT_DIR, "config.js"));
+  const rows = await listPermissions();
+  if (rows.length === 0) {
+    console.log("(no permissions — run: gt-bot perms add <chat_id> --role admin)");
+    return;
+  }
+  // Simple text table
+  const fmt = (s, w) => String(s ?? "").padEnd(w);
+  console.log(
+    fmt("chat_id", 14) + fmt("role", 8) + fmt("rigs", 20) + fmt("label", 30) + "created_at"
+  );
+  console.log("-".repeat(86));
+  for (const r of rows) {
+    console.log(
+      fmt(r.chat_id, 14) +
+        fmt(r.role, 8) +
+        fmt(r.rigs, 20) +
+        fmt(r.label || "", 30) +
+        (r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at)
+    );
+  }
+}
+
+async function cmdPermsRemove(args) {
+  const chatId = args[0];
+  if (!chatId) {
+    console.error("Usage: gt-bot perms remove <chat_id>");
+    process.exit(1);
+  }
+  const { removePermission } = require(path.join(BOT_DIR, "config.js"));
+  const affected = await removePermission(chatId);
+  if (affected === 0) {
+    console.log(`No permission row for chat ${chatId}.`);
+  } else {
+    console.log(`Removed permission for chat ${chatId}.`);
+  }
+}
+
+async function cmdStart() {
+  // Call bot.js main() directly so errors bubble up through our top-level
+  // try/catch. (We can't rely on require-side-effects because require.main
+  // !== module when the CLI loads it.)
+  const { main } = require(path.join(BOT_DIR, "bot.js"));
+  await main();
+}
+
+async function main() {
+  const [, , cmd, ...rest] = process.argv;
+  if (!cmd || cmd === "--help" || cmd === "-h") usage(0);
+
+  try {
+    if (cmd === "init") return await cmdInit();
+    if (cmd === "start") return await cmdStart();
+    if (cmd === "perms") {
+      const sub = rest[0];
+      const subArgs = rest.slice(1);
+      if (sub === "add") return await cmdPermsAdd(subArgs);
+      if (sub === "list") return await cmdPermsList();
+      if (sub === "remove" || sub === "rm") return await cmdPermsRemove(subArgs);
+      console.error(`Unknown perms subcommand: ${sub || "(none)"}`);
+      usage(1);
+    }
+    console.error(`Unknown command: ${cmd}`);
+    usage(1);
+  } catch (err) {
+    console.error("Error:", err.message);
+    if (process.env.DEBUG) console.error(err.stack);
+    process.exit(1);
+  }
+}
+
+main();
