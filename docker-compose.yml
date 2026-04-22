@@ -16,8 +16,6 @@
 # The bind-mount of ~/.claude from the host is what lets `claude login` on the
 # host flow through to the container without asking users to re-auth.
 
-version: "3.9"
-
 services:
   gastown:
     build:

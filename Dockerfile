@@ -11,6 +11,7 @@ ARG DEBIAN_VERSION=bookworm
 
 ARG DOLT_VERSION=1.86.1
 ARG BD_VERSION=1.0.2
+ARG BD_REPO=gastownhall/beads
 ARG GT_VERSION=0.12.0
 ARG CLAUDE_VERSION=2.1.117
 
@@ -47,6 +48,7 @@ FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS runtime
 
 ARG DOLT_VERSION
 ARG BD_VERSION
+ARG BD_REPO
 ARG GT_VERSION
 ARG CLAUDE_VERSION
 ARG PYTHON_VERSION
@@ -98,16 +100,22 @@ RUN set -eux; \
     dolt version
 
 # --- bd (beads) ------------------------------------------------------------
+# Upstream ships a GoReleaser tarball (beads_<ver>_linux_<goarch>.tar.gz) that
+# contains the bd binary. Extract and install to /usr/local/bin/bd.
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "${arch}" in \
-      amd64) bd_arch=x86_64 ;; \
-      arm64) bd_arch=aarch64 ;; \
+      amd64) bd_arch=amd64 ;; \
+      arm64) bd_arch=arm64 ;; \
       *) echo "unsupported arch: ${arch}"; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/bd \
-      "https://github.com/fernando15suarez/beads/releases/download/v${BD_VERSION}/bd-linux-${bd_arch}"; \
+    tmpdir="$(mktemp -d)"; \
+    curl -fsSL -o "${tmpdir}/bd.tgz" \
+      "https://github.com/${BD_REPO}/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${bd_arch}.tar.gz"; \
+    tar -xzf "${tmpdir}/bd.tgz" -C "${tmpdir}"; \
+    mv "${tmpdir}/bd" /usr/local/bin/bd; \
     chmod +x /usr/local/bin/bd; \
+    rm -rf "${tmpdir}"; \
     bd --version
 
 # --- gt (Gas Town CLI) -----------------------------------------------------
