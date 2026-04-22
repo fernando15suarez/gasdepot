@@ -1,6 +1,6 @@
-"""`gt-wizard install` — create or re-sync the Gas Town HQ at /gastown.
+"""`gt-wizard install` — create or re-sync the Gas Town HQ.
 
-Thin wrapper around `gt install /gastown --force --name gastown`. Idempotent:
+Thin wrapper around `gt install $GT_TOWN_ROOT --force --name gastown`. Idempotent:
 `--force` re-runs in an existing HQ without clobbering `town.json` or
 `rigs.json`, so this is safe to call on every container boot.
 
@@ -21,14 +21,24 @@ from pathlib import Path
 from lib import ui
 
 NAME = "install"
-HELP = "Create the Gas Town HQ at /gastown (idempotent)."
+HELP = "Create the Gas Town HQ (idempotent)."
+
+
+def _default_hq_path() -> str:
+    """HQ lives inside /gastown/repos so it persists via the gastown-repos
+    named volume. Honor GT_TOWN_ROOT if set (the env var gt itself uses)."""
+    explicit = os.environ.get("GT_TOWN_ROOT")
+    if explicit:
+        return explicit
+    home = os.environ.get("GASTOWN_HOME", "/gastown")
+    return str(Path(home) / "repos" / "hq")
 
 
 def register(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--path",
-        default=os.environ.get("GASTOWN_HOME", "/gastown"),
-        help="HQ path (default: $GASTOWN_HOME or /gastown).",
+        default=_default_hq_path(),
+        help="HQ path (default: $GT_TOWN_ROOT, else $GASTOWN_HOME/repos/hq).",
     )
     parser.add_argument(
         "--name",

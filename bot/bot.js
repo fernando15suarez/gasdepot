@@ -67,9 +67,25 @@ function gtAvailable() {
   }
 }
 
+// `gt mail send` / `gt nudge` need to know where the Gas Town HQ lives —
+// otherwise they fail with "not in a Gas Town workspace." We source the
+// path from GT_TOWN_ROOT (the same env var `gt install --shell` sets) and
+// pass it to every subprocess as both cwd and an explicit env var so gt
+// finds it regardless of which resolution path it takes internally.
+function gtEnv(extra = {}) {
+  const townRoot = process.env.GT_TOWN_ROOT;
+  const env = { ...process.env, ...extra };
+  if (townRoot) env.GT_TOWN_ROOT = townRoot;
+  return {
+    cwd: townRoot || process.cwd(),
+    env,
+  };
+}
+
 async function gtMailSend(target, subject, body) {
   const proc = execFileAsync("gt", ["mail", "send", target, "-s", subject, "--stdin"], {
     timeout: 30000,
+    ...gtEnv(),
   });
   proc.child.stdin.write(body);
   proc.child.stdin.end();
@@ -80,6 +96,7 @@ async function gtMailSend(target, subject, body) {
 async function gtNudge(target, text) {
   await execFileAsync("gt", ["nudge", target, text, "--mode", "immediate"], {
     timeout: 10000,
+    ...gtEnv(),
   });
 }
 

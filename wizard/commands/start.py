@@ -30,11 +30,19 @@ MAYOR_SESSION = "hq-mayor"
 MAYOR_WAIT_SECONDS = 30
 
 
+def _default_hq_path() -> str:
+    explicit = os.environ.get("GT_TOWN_ROOT")
+    if explicit:
+        return explicit
+    home = os.environ.get("GASTOWN_HOME", "/gastown")
+    return str(Path(home) / "repos" / "hq")
+
+
 def register(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--path",
-        default=os.environ.get("GASTOWN_HOME", "/gastown"),
-        help="HQ path (default: $GASTOWN_HOME or /gastown).",
+        default=_default_hq_path(),
+        help="HQ path (default: $GT_TOWN_ROOT, else $GASTOWN_HOME/repos/hq).",
     )
     parser.add_argument(
         "--all",

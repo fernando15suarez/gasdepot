@@ -11,7 +11,8 @@ Required checks (failing any of these fails the whole verify):
   - .env keys present and well-formed
   - Claude auth available (ANTHROPIC_API_KEY or ~/.claude mount)
   - Dolt TCP port open on localhost
-  - Workspace exists: /gastown/CLAUDE.md is readable
+  - Workspace exists: $GT_TOWN_ROOT/CLAUDE.md is readable
+    (default: /gastown/repos/hq/CLAUDE.md)
   - gt_bot DB exists (via `dolt sql` if the CLI is available, TCP otherwise)
   - gt-bot HTTP port 3335 is listening
   - Mayor tmux session is alive (or `gt mayor status --running` == true)
@@ -54,6 +55,10 @@ OPTIONAL_KEYS = {
 }
 
 GASTOWN_HOME = Path(os.environ.get("GASTOWN_HOME", "/gastown"))
+# HQ now lives under /gastown/repos (in the persisted named volume) — see
+# entrypoint.sh's HQ_ROOT. Honor GT_TOWN_ROOT if set (the env var gt itself
+# uses), fall back to the default install path.
+HQ_ROOT = Path(os.environ.get("GT_TOWN_ROOT", str(GASTOWN_HOME / "repos" / "hq")))
 GT_BOT_PORT = int(os.environ.get("GT_BOT_PORT", "3335"))
 MAYOR_SESSION = "hq-mayor"
 
@@ -129,7 +134,7 @@ def run(args: argparse.Namespace) -> int:
         failures += 1
 
     # --- Workspace (HQ) exists -------------------------------------------
-    claude_md = GASTOWN_HOME / "CLAUDE.md"
+    claude_md = HQ_ROOT / "CLAUDE.md"
     if claude_md.is_file():
         if not args.quiet:
             ui.success(f"HQ present: {claude_md} readable.")
@@ -260,7 +265,7 @@ def _mail_roundtrip() -> tuple[bool, str]:
             cmd,
             input=body,
             text=True,
-            cwd=str(GASTOWN_HOME) if GASTOWN_HOME.is_dir() else None,
+            cwd=str(HQ_ROOT) if HQ_ROOT.is_dir() else None,
             capture_output=True,
             timeout=15,
             check=False,

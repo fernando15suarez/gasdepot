@@ -16,6 +16,13 @@ MODE="${1:-wizard}"
 GASTOWN_HOME="${GASTOWN_HOME:-/gastown}"
 DOLT_PORT="${DOLT_PORT:-3307}"
 DOLT_DATA_DIR="${GASTOWN_HOME}/.dolt-data"
+# HQ lives inside /gastown/repos so it survives rebuilds via the
+# `gastown-repos` named volume. /gastown itself is NOT persisted, so
+# installing the HQ directly at GASTOWN_HOME would evaporate on every
+# `docker compose up --build`.
+HQ_ROOT="${GT_TOWN_ROOT:-${GASTOWN_HOME}/repos/hq}"
+# Export so every child process (gt install, gt start, gt-bot) sees it.
+export GT_TOWN_ROOT="${HQ_ROOT}"
 DOLT_LOG="${GASTOWN_HOME}/logs/dolt.log"
 DOLT_PID="${GASTOWN_HOME}/logs/dolt.pid"
 ENV_FILE="${GASTOWN_HOME}/.env"
@@ -161,28 +168,31 @@ stop_gt_bot() {
     fi
 }
 
-# Create (or refresh) the Gas Town HQ at /gastown so `gt mail send mayor/`
+# Create (or refresh) the Gas Town HQ at HQ_ROOT so `gt mail send mayor/`
 # and friends have a workspace to operate in. Idempotent via `--force` —
 # which re-runs install in an existing HQ without clobbering town.json or
-# rigs.json, so this is safe on every boot.
+# rigs.json, so this is safe on every boot. HQ_ROOT sits inside
+# /gastown/repos so the `gastown-repos` named volume persists it across
+# `docker compose up --build`.
 ensure_hq() {
-    if [[ -f "${GASTOWN_HOME}/CLAUDE.md" ]]; then
-        log "HQ already installed at ${GASTOWN_HOME}."
+    mkdir -p "${HQ_ROOT}"
+    if [[ -f "${HQ_ROOT}/CLAUDE.md" ]]; then
+        log "HQ already installed at ${HQ_ROOT}."
         return 0
     fi
 
-    log "Installing Gas Town HQ at ${GASTOWN_HOME}..."
-    if ! gt install "${GASTOWN_HOME}" \
+    log "Installing Gas Town HQ at ${HQ_ROOT}..."
+    if ! gt install "${HQ_ROOT}" \
             --name gastown \
             --dolt-port "${DOLT_PORT}" \
             --force; then
         die "gt install failed — see output above. The stack will not be usable until this is fixed."
     fi
 
-    if [[ ! -f "${GASTOWN_HOME}/CLAUDE.md" ]]; then
-        die "gt install returned 0 but ${GASTOWN_HOME}/CLAUDE.md is missing."
+    if [[ ! -f "${HQ_ROOT}/CLAUDE.md" ]]; then
+        die "gt install returned 0 but ${HQ_ROOT}/CLAUDE.md is missing."
     fi
-    log "HQ ready."
+    log "HQ ready at ${HQ_ROOT}."
 }
 
 # Launch Deacon + Mayor via `gt start`, in the background so tmux sessions
@@ -197,7 +207,7 @@ start_mayor() {
 
     log "Launching Deacon + Mayor via gt start..."
     (
-        cd "${GASTOWN_HOME}"
+        cd "${HQ_ROOT}"
         nohup gt start >"${GT_START_LOG}" 2>&1 &
         echo $! >"${GT_START_PID}"
     )
