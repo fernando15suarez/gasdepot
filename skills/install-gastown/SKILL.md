@@ -104,7 +104,7 @@ Once Mayor has round-tripped a message, share:
 You handle these — do not ask the user to run the fix command.
 
 - **"Docker cannot access ~/.claude"** — the volume mount is read-write but host perms block root-in-container. `ls -la ~/.claude`; if it is owner-restricted, `chmod -R u+rwx,g+rx ~/.claude`.
-- **"Dolt port 3307 in use"** — the host has Gas Town already running. Try `gt dolt stop` on the host. If that is unacceptable (the host Gas Town must stay up), edit `DOLT_PORT` in `.env` and the published port in `docker-compose.yml`, then rebuild.
+- **"Dolt port 3307 in use"** — the host has something bound to 3307. If Gas Town is running on the host, try `gt dolt stop`. If the bound process wasn't started by `gt dolt start` (e.g. a stray `dolt sql-server` daemon), `gt dolt stop` won't find it — use `pgrep -a dolt` to locate it and `kill <pid>` directly. If you need the host Dolt to stay up, edit `DOLT_PORT` in `.env` and the published port in `docker-compose.yml`, then rebuild.
 - **"gt-bot refuses to start: no rows in gt_bot.permissions"** — the auto-detect didn't catch a message in the 90s window. `docker compose logs gastown | tail -30` will confirm. Restart the container and ask the user to DM the bot the moment you see the auto-detect prompt. Last resort: `docker compose exec gastown /gastown/bot/bin/gt-bot perms add <chat_id> --role admin`.
 - **"`gt mail send` fails with 'not in a Gas Town workspace'"** — HQ missing. `docker compose exec gastown gt-wizard install` stamps it.
 - **"bot receives messages but Mayor never responds"** — Mayor not up. `docker compose exec gastown gt-wizard start` and re-verify. If it still won't boot, read `/gastown/logs/gt-start.log`.

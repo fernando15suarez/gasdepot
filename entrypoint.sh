@@ -78,6 +78,21 @@ sync_skills_to_host() {
     : >"${sentinel}"
 }
 
+# `gt install` calls into Dolt to initialize identity metadata, and Dolt
+# refuses to make commits unless user.name + user.email are configured.
+# The .env file carries GIT_USER_NAME / GIT_USER_EMAIL for exactly this;
+# we push them into Dolt's global config unconditionally on every boot
+# (idempotent — `dolt config --global --add` overwrites without error).
+# Fallbacks cover the case where the user never filled those in so gt
+# install still gets SOMETHING to commit as.
+ensure_dolt_identity() {
+    local name="${GIT_USER_NAME:-gastown}"
+    local email="${GIT_USER_EMAIL:-gastown@localhost}"
+    log "Configuring Dolt identity (${name} <${email}>)."
+    dolt config --global --add user.name "${name}"  >/dev/null 2>&1 || true
+    dolt config --global --add user.email "${email}" >/dev/null 2>&1 || true
+}
+
 start_dolt() {
     if [[ -f "${DOLT_PID}" ]] && kill -0 "$(cat "${DOLT_PID}")" 2>/dev/null; then
         log "Dolt already running (pid $(cat "${DOLT_PID}"))."
@@ -133,9 +148,25 @@ start_gt_bot() {
         return 0
     fi
 
+    # `gt-bot init` creates the gt_bot DB + permissions table. If the
+    # Dolt identity isn't set, it can silently succeed but never commit
+    # the schema — leaving a phantom DB that disappears on the next
+    # server restart. Retry up to 3 times, and verify the permissions
+    # table is present before declaring init done.
     log "gt-bot: initializing Dolt schema..."
-    if ! (cd "${GT_BOT_DIR}" && GT_BOT_TOKEN="${token}" node bin/gt-bot init); then
-        warn "gt-bot: init failed — skipping start."
+    local attempt=0
+    while (( attempt < 3 )); do
+        attempt=$(( attempt + 1 ))
+        if (cd "${GT_BOT_DIR}" && GT_BOT_TOKEN="${token}" node bin/gt-bot init) \
+           && _gt_bot_has_permissions_table; then
+            log "gt-bot: schema verified."
+            break
+        fi
+        warn "gt-bot: init attempt ${attempt} did not leave a usable permissions table — retrying."
+        sleep 2
+    done
+    if ! _gt_bot_has_permissions_table; then
+        warn "gt-bot: permissions table still missing after 3 attempts — skipping start."
         return 0
     fi
 
@@ -224,6 +255,23 @@ auto_detect_operator_chat_id() {
     done
 
     warn "No message received within 90s. Set OPERATOR_TELEGRAM_CHAT_ID manually in ${ENV_FILE} and restart the container."
+}
+
+# Confirm the gt_bot.permissions table is actually queryable via the same
+# TCP path the bot uses. Mirrors verify.py's _gt_bot_db_exists check.
+_gt_bot_has_permissions_table() {
+    (cd "${GT_BOT_DIR}" && node -e "
+        const mysql = require('mysql2/promise');
+        (async () => {
+            try {
+                const c = await mysql.createConnection({
+                    host:'127.0.0.1',port:${DOLT_PORT},user:'root',password:'',database:'gt_bot'
+                });
+                const [rows] = await c.query(\"SHOW TABLES LIKE 'permissions'\");
+                await c.end();
+                process.exit(rows.length ? 0 : 1);
+            } catch (e) { process.exit(1); }
+        })();" >/dev/null 2>&1)
 }
 
 stop_gt_bot() {
@@ -327,6 +375,7 @@ case "${MODE}" in
         ensure_env_file
         sync_skills_to_host
         start_dolt
+        ensure_dolt_identity
         start_gt_bot
         log "Launching wizard — run \`gt-wizard --help\` for individual commands."
         exec "${GASTOWN_HOME}/wizard/gt-wizard" init
@@ -342,6 +391,7 @@ case "${MODE}" in
         #   3. gt-bot — needs Dolt for its own gt_bot DB, does NOT need HQ.
         #   4. Mayor — needs HQ to exist; is the thing gt-bot mails into.
         start_dolt
+        ensure_dolt_identity
         auto_detect_operator_chat_id
         ensure_hq
         start_gt_bot

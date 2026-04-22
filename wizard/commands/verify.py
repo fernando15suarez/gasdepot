@@ -212,25 +212,45 @@ def _port_open(host: str, port: int, timeout: float = 1.5) -> bool:
 
 
 def _gt_bot_db_exists(dolt_port: int) -> bool:
-    """Strong check: shell out to `dolt sql`. Weak fallback: TCP only."""
-    if shutil.which("dolt"):
+    """Check gt_bot DB over TCP via the exact same path gt-bot uses.
+
+    Earlier versions shelled out to `dolt sql`, but that resolves the
+    server differently than a TCP MySQL client — it was reporting a
+    false negative even when the bot (which uses mysql2 on 127.0.0.1:3307)
+    could happily connect. We now run a tiny node one-liner inside the
+    bot's own node_modules tree so the check mirrors the bot's own
+    connection semantics.
+    """
+    bot_dir = Path("/gastown/bot")
+    script = (
+        "const mysql = require('mysql2/promise');"
+        "(async () => {"
+        "  try {"
+        f"    const c = await mysql.createConnection({{host:'127.0.0.1',port:{dolt_port},user:'root',password:'',database:'gt_bot'}});"
+        "    await c.query('SHOW TABLES');"
+        "    await c.end();"
+        "    process.exit(0);"
+        "  } catch (e) {"
+        "    console.error(e.message);"
+        "    process.exit(1);"
+        "  }"
+        "})();"
+    )
+    if bot_dir.is_dir() and shutil.which("node"):
         try:
             proc = subprocess.run(
-                [
-                    "dolt",
-                    "--host", "127.0.0.1",
-                    "--port", str(dolt_port),
-                    "--user", "root",
-                    "--no-tls",
-                    "--use-db", "gt_bot",
-                    "sql", "-q", "SHOW TABLES",
-                ],
+                ["node", "-e", script],
+                cwd=str(bot_dir),
                 capture_output=True, text=True, timeout=10, check=False,
             )
-            return proc.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
+            if proc.returncode == 0:
+                return True
+            # Don't silently accept false; fall through so we return False
+            # and the caller prints the ✗.
             return False
-    # No dolt CLI — we can at least confirm the port is up. Not as strong.
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    # Fallback: at least confirm the server port is open.
     return _port_open("127.0.0.1", dolt_port)
 
 
