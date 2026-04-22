@@ -152,6 +152,11 @@ COPY --chown=gastown:gastown entrypoint.sh /gastown/entrypoint.sh
 COPY --chown=gastown:gastown .env.example /gastown/.env.example
 COPY --chown=gastown:gastown docs /gastown/docs
 COPY --chown=gastown:gastown skills /gastown/skills
+COPY --chown=gastown:gastown bot /gastown/bot
+
+# Install gt-bot dependencies into the image so the container is self-contained.
+# Use --omit=dev to keep the image small; gt-bot has no devDependencies today.
+RUN cd /gastown/bot && npm install --omit=dev --no-audit --no-fund
 
 # Materialize the install-gastown skill into the container's Claude config
 # directory. Sources live under /gastown/skills/ (plain path, always checked
@@ -167,6 +172,8 @@ WORKDIR /gastown
 
 # Dolt server port — see gt/CLAUDE.md for operational notes.
 EXPOSE 3307
+# gt-bot HTTP API (POST /send, GET /health).
+EXPOSE 3335
 
 ENTRYPOINT ["/gastown/entrypoint.sh"]
 CMD ["wizard"]

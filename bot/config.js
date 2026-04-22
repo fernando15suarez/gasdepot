@@ -15,10 +15,10 @@ if (fs.existsSync(ENV_PATH)) {
 const { withConnection } = require("./db");
 
 function requireToken() {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = process.env.GT_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     console.error(
-      "TELEGRAM_BOT_TOKEN is required. Set it in the environment or in " +
+      "GT_BOT_TOKEN (or TELEGRAM_BOT_TOKEN) is required. Set it in the environment or in " +
         path.join(__dirname, ".env") + " (see .env.example)."
     );
     process.exit(1);

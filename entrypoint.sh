@@ -19,6 +19,9 @@ DOLT_DATA_DIR="${GASTOWN_HOME}/.dolt-data"
 DOLT_LOG="${GASTOWN_HOME}/logs/dolt.log"
 DOLT_PID="${GASTOWN_HOME}/logs/dolt.pid"
 ENV_FILE="${GASTOWN_HOME}/.env"
+GT_BOT_DIR="${GASTOWN_HOME}/bot"
+GT_BOT_LOG="${GASTOWN_HOME}/logs/gt-bot.log"
+GT_BOT_PID="${GASTOWN_HOME}/logs/gt-bot.pid"
 
 log()  { printf '\033[36m[gastown]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[gastown]\033[0m %s\n' "$*" >&2; }
@@ -105,7 +108,56 @@ stop_dolt() {
     fi
 }
 
-trap stop_dolt EXIT
+# gt-bot is optional. Starts only if a Telegram bot token is configured.
+# If permissions table is empty and OPERATOR_TELEGRAM_CHAT_ID is set, seed
+# the operator as admin so the bot comes up functional on first run.
+start_gt_bot() {
+    local token="${GT_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+    if [[ -z "${token}" ]]; then
+        log "gt-bot: no GT_BOT_TOKEN set — skipping (set one in .env to enable)."
+        return 0
+    fi
+    if [[ ! -d "${GT_BOT_DIR}" ]]; then
+        warn "gt-bot: ${GT_BOT_DIR} missing — skipping."
+        return 0
+    fi
+
+    log "gt-bot: initializing Dolt schema..."
+    if ! (cd "${GT_BOT_DIR}" && GT_BOT_TOKEN="${token}" node bin/gt-bot init); then
+        warn "gt-bot: init failed — skipping start."
+        return 0
+    fi
+
+    # Seed the operator chat as admin if permissions table is empty.
+    if [[ -n "${OPERATOR_TELEGRAM_CHAT_ID:-}" ]]; then
+        local count
+        count="$(cd "${GT_BOT_DIR}" && node bin/gt-bot perms list 2>/dev/null | grep -c '^[0-9]' || true)"
+        if [[ "${count}" == "0" ]]; then
+            log "gt-bot: seeding operator chat ${OPERATOR_TELEGRAM_CHAT_ID} as admin."
+            (cd "${GT_BOT_DIR}" && node bin/gt-bot perms add "${OPERATOR_TELEGRAM_CHAT_ID}" --role admin --label "operator") || \
+                warn "gt-bot: operator seed failed (continuing)."
+        fi
+    fi
+
+    log "gt-bot: starting on port ${GT_BOT_PORT:-3335}..."
+    (cd "${GT_BOT_DIR}" && nohup env GT_BOT_TOKEN="${token}" node bin/gt-bot start \
+        >"${GT_BOT_LOG}" 2>&1 &
+    echo $! >"${GT_BOT_PID}")
+}
+
+stop_gt_bot() {
+    if [[ -f "${GT_BOT_PID}" ]]; then
+        local pid; pid="$(cat "${GT_BOT_PID}")"
+        if kill -0 "${pid}" 2>/dev/null; then
+            log "Stopping gt-bot (pid ${pid})..."
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+        rm -f "${GT_BOT_PID}"
+    fi
+}
+
+trap 'stop_gt_bot; stop_dolt' EXIT
 
 case "${MODE}" in
     wizard)
@@ -113,6 +165,7 @@ case "${MODE}" in
         ensure_env_file
         sync_skills_to_host
         start_dolt
+        start_gt_bot
         log "Launching wizard — run \`gt-wizard --help\` for individual commands."
         exec "${GASTOWN_HOME}/wizard/gt-wizard" init
         ;;
@@ -121,8 +174,9 @@ case "${MODE}" in
         ensure_env_file
         sync_skills_to_host
         start_dolt
-        log "Daemon mode — tailing Dolt log. Ctrl+C to exit."
-        exec tail -F "${DOLT_LOG}"
+        start_gt_bot
+        log "Daemon mode — tailing Dolt + gt-bot logs. Ctrl+C to exit."
+        exec tail -F "${DOLT_LOG}" "${GT_BOT_LOG}" 2>/dev/null || exec tail -F "${DOLT_LOG}"
         ;;
     shell)
         ensure_dirs

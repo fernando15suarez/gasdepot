@@ -32,8 +32,11 @@ services:
       - .env
 
     # Dolt is reachable from the host for debugging / gt dolt status.
+    # gt-bot's HTTP /send + /health API is also exposed so agents on the host
+    # can post to http://localhost:3335/send.
     ports:
       - "3307:3307"
+      - "3335:3335"
 
     volumes:
       # Claude credentials — passthrough from host. Read-write so the agent
