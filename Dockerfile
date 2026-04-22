@@ -125,20 +125,42 @@ RUN npm install -g "@gastown/gt@${GT_VERSION}" \
     && gt --version
 
 # --- claude (Claude Code CLI) ---------------------------------------------
-# Installed via the official install script, pinned to CLAUDE_VERSION.
+# The install script now takes the version as a positional arg and ignores
+# CLAUDE_INSTALL_DIR — it always lands in $HOME/.local/bin. This layer runs
+# as root, so that resolves to /root/.local/bin; we symlink into
+# /usr/local/bin so both root and the gastown user can invoke `claude`.
 RUN set -eux; \
-    curl -fsSL https://claude.ai/install.sh \
-      | CLAUDE_INSTALL_VERSION="${CLAUDE_VERSION}" CLAUDE_INSTALL_DIR=/usr/local/share/claude bash -s -- --no-interactive; \
-    ln -sf /usr/local/share/claude/bin/claude /usr/local/bin/claude; \
+    curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}"; \
+    ln -sf /root/.local/bin/claude /usr/local/bin/claude; \
     claude --version
 
 # --- non-root user ---------------------------------------------------------
 # All runtime work happens as `gastown` (uid 1000). Matches typical host uid
 # so bind-mounted volumes don't end up root-owned.
-RUN groupadd -g 1000 gastown \
-    && useradd -m -u 1000 -g gastown -s /bin/bash gastown \
-    && mkdir -p /gastown /home/gastown/.claude /home/gastown/.config \
-    && chown -R gastown:gastown /gastown /home/gastown
+#
+# The node base image ships a `node` user at UID/GID 1000, so we rename it
+# to `gastown` rather than trying to create a fresh one (which would fail
+# with EEXIST). The conditional covers future base images that don't ship
+# a uid-1000 user.
+#
+# We also pre-create the volume mount points (/gastown/logs, repos,
+# .dolt-data) so that when Docker initializes a named volume on first run,
+# it copies the correct ownership from the image layer. Without this, a
+# fresh named volume mounts as root:root and the gastown user can't write.
+RUN set -eux; \
+    if getent group 1000 >/dev/null 2>&1; then \
+      groupmod -n gastown "$(getent group 1000 | cut -d: -f1)"; \
+    else \
+      groupadd -g 1000 gastown; \
+    fi; \
+    if id 1000 >/dev/null 2>&1; then \
+      usermod -l gastown -d /home/gastown -m -s /bin/bash -g gastown "$(getent passwd 1000 | cut -d: -f1)"; \
+    else \
+      useradd -m -u 1000 -g gastown -s /bin/bash gastown; \
+    fi; \
+    mkdir -p /gastown/logs /gastown/repos /gastown/.dolt-data \
+             /home/gastown/.claude /home/gastown/.config; \
+    chown -R gastown:gastown /gastown /home/gastown
 
 # --- vendored sources ------------------------------------------------------
 COPY --from=sources --chown=gastown:gastown /src/teletalk /opt/teletalk
