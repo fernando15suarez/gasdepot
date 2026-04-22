@@ -20,7 +20,7 @@ Do these one at a time. After each step, wait for the user to confirm it worked 
 1. **Copy `.env.example` to `.env`.** The entrypoint does this automatically on first run, but if you're helping them configure *before* starting the container, run: `cp .env.example .env`.
 
 2. **Collect the gt-bot Telegram token.** Walk them through creating **one** Telegram bot with @BotFather — this is gt-bot, Gas Town's default bridge. Paste the token into `GT_BOT_TOKEN` in `.env` (the wizard will prompt for it). If they ask "what's a Telegram bot token?", explain: it's the string BotFather hands back after `/newbot`, formatted like `123456789:ABCdefGHIjklMNOpqrSTUvwxYZ1234567890`. It authenticates the bot with Telegram's API.
-   They also need their own Telegram chat ID — tell them to message `@userinfobot` on Telegram to find it. Put it in `OPERATOR_TELEGRAM_CHAT_ID`. The entrypoint will auto-seed this as an admin row in gt-bot's permissions DB on first boot.
+   **No need to look up their chat ID manually.** After they paste the token, the wizard prompts them to send any message to their new bot on Telegram — the wizard polls the Telegram API and auto-fills `OPERATOR_TELEGRAM_CHAT_ID` from that message. The entrypoint seeds this chat as gt-bot's first admin row on boot. If the wizard times out (no message within ~90s), it falls back to manual entry (message `@userinfobot`).
 
    **Optional add-ons.** TeleTalk (`TELETALK_BOT_TOKEN`) and Crow (`CROW_BOT_TOKEN`) are no longer required. If the user wants the richer conversational relay (TeleTalk) or the legacy ops bridge (Crow), they can create extra bots with @BotFather and drop those tokens in later — gt-bot alone is enough to complete install.
 
