@@ -2,6 +2,9 @@
 
 Separate from `init` so the skill can send users here directly when they want
 to rotate tokens or add the operator chat ID after the fact.
+
+gt-bot (`GT_BOT_TOKEN`) is the one required bot. TeleTalk and Crow are optional
+add-ons — the user can press enter to skip them and fill them in later.
 """
 
 from __future__ import annotations
@@ -30,15 +33,38 @@ def register(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> int:
     ui.header("Telegram bots")
     ui.info(
-        "You need two separate bots — one for TeleTalk, one for Crow. "
-        "Create them by chatting with @BotFather on Telegram and copy each "
-        "token into the prompt below."
+        "gt-bot is Gas Town's default Telegram bridge — you need one bot for it. "
+        "Create it by chatting with @BotFather on Telegram (`/newbot`) and paste "
+        "the token below."
+    )
+    ui.info(
+        "TeleTalk and Crow are optional add-ons. Press enter at their prompts to "
+        "skip — you can set them later by re-running `gt-wizard setup-telegram`."
     )
 
     env = EnvFile.load()
 
-    _set_token(env, "TELETALK_BOT_TOKEN", "TeleTalk bot token", args.non_interactive)
-    _set_token(env, "CROW_BOT_TOKEN", "Crow bot token", args.non_interactive)
+    _set_token(
+        env,
+        "GT_BOT_TOKEN",
+        "gt-bot Telegram bot token (required)",
+        args.non_interactive,
+        required=True,
+    )
+    _set_token(
+        env,
+        "TELETALK_BOT_TOKEN",
+        "TeleTalk bot token (optional — press enter to skip)",
+        args.non_interactive,
+        required=False,
+    )
+    _set_token(
+        env,
+        "CROW_BOT_TOKEN",
+        "Crow bot token (optional — press enter to skip)",
+        args.non_interactive,
+        required=False,
+    )
     _set_chat_id(env, "OPERATOR_TELEGRAM_CHAT_ID", args.non_interactive)
 
     env.save()
@@ -46,7 +72,13 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _set_token(env: EnvFile, key: str, label: str, non_interactive: bool) -> None:
+def _set_token(
+    env: EnvFile,
+    key: str,
+    label: str,
+    non_interactive: bool,
+    required: bool = True,
+) -> None:
     existing = env.get(key) or ""
     if existing and _TOKEN_RE.match(existing):
         if non_interactive or not ui.confirm(f"{key} already set — replace it?", default=False):
@@ -54,11 +86,20 @@ def _set_token(env: EnvFile, key: str, label: str, non_interactive: bool) -> Non
             return
 
     if non_interactive and not existing:
-        ui.warn(f"{key} is missing — set it in .env before starting agents.")
+        if required:
+            ui.warn(f"{key} is missing — set it in .env before starting agents.")
+        else:
+            ui.info(f"{key} not set (optional).")
         return
 
     while True:
         token = ui.prompt(label, secret=True)
+        if not token:
+            if required:
+                ui.warn(f"{key} is required. Paste the token from @BotFather to continue.")
+                continue
+            ui.info(f"{key} left blank (optional — skipping).")
+            return
         if _TOKEN_RE.match(token):
             env.set(key, token)
             ui.success(f"{key} saved.")
@@ -78,7 +119,8 @@ def _set_chat_id(env: EnvFile, key: str, non_interactive: bool) -> None:
 
     ui.info(
         "Your operator chat ID is the Telegram user ID the bots will DM for "
-        "escalations. Message @userinfobot on Telegram to find yours."
+        "escalations. On first boot the container seeds this as gt-bot's first "
+        "admin row. Message @userinfobot on Telegram to find yours."
     )
     while True:
         raw = ui.prompt(f"{key}")

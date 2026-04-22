@@ -2,7 +2,8 @@
 
 Catches the most common "stuck at install" problems:
   - `.env` exists and has the keys we expect
-  - Telegram tokens are shaped right
+  - `GT_BOT_TOKEN` is set and well-formed (required)
+  - TeleTalk / Crow tokens, if set, are well-formed (optional)
   - Claude credentials are mounted and non-empty
   - Dolt server is reachable on the configured port
 """
@@ -24,10 +25,16 @@ HELP = "Run health checks and report missing / bad configuration."
 _TOKEN_RE = re.compile(r"^\d{6,}:[A-Za-z0-9_-]{20,}$")
 _CHAT_ID_RE = re.compile(r"^-?\d+$")
 
+# Required keys must be present and match their regex.
 REQUIRED_KEYS = {
-    "TELETALK_BOT_TOKEN": ("Telegram token for TeleTalk", _TOKEN_RE),
-    "CROW_BOT_TOKEN": ("Telegram token for Crow", _TOKEN_RE),
+    "GT_BOT_TOKEN": ("Telegram token for gt-bot (primary bridge)", _TOKEN_RE),
     "OPERATOR_TELEGRAM_CHAT_ID": ("Your Telegram chat ID", _CHAT_ID_RE),
+}
+
+# Optional keys: if present they must match, but missing is fine.
+OPTIONAL_KEYS = {
+    "TELETALK_BOT_TOKEN": ("Telegram token for TeleTalk (optional add-on)", _TOKEN_RE),
+    "CROW_BOT_TOKEN": ("Telegram token for Crow (optional add-on)", _TOKEN_RE),
 }
 
 
@@ -50,6 +57,20 @@ def run(args: argparse.Namespace) -> int:
             failures += 1
         elif not args.quiet:
             ui.success(f"{key} OK.")
+
+    for key, (label, pattern) in OPTIONAL_KEYS.items():
+        value = env.get(key) or ""
+        if not value:
+            if not args.quiet:
+                ui.info(f"{key} not set ({label}) — OK, this add-on is optional.")
+            continue
+        if not pattern.match(value):
+            # A garbage value is worth flagging even though the key is optional —
+            # it means the user tried and fat-fingered it.
+            ui.error(f"{key} is set but doesn't look valid ({label}).")
+            failures += 1
+        elif not args.quiet:
+            ui.success(f"{key} OK (optional add-on enabled).")
 
     anthropic_set = bool(env.get("ANTHROPIC_API_KEY") or "")
     claude_dir = Path(os.path.expanduser("~/.claude"))

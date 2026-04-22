@@ -8,7 +8,38 @@ Telegram bridge for Gas Town, bundled with gasdepot.
   all admin chats.
 
 Permissions live in a dedicated Dolt database `gt_bot` (table `permissions`).
-The only secret — `TELEGRAM_BOT_TOKEN` — is read from the environment or `.env`.
+The only secret — `TELEGRAM_BOT_TOKEN` (or `GT_BOT_TOKEN`) — is read from the
+environment or `.env`.
+
+## When running inside the gasdepot container
+
+gasdepot ships gt-bot pre-installed and starts it for you. The moment-to-moment
+workflow is different from a host install — most commands below you will never
+type yourself:
+
+- **Token source.** `GT_BOT_TOKEN` is read from `/gastown/.env` (mounted into
+  the container as `.env`). There is no separate `bot/.env` — put the token in
+  the top-level `.env` next to `TELETALK_BOT_TOKEN` and `CROW_BOT_TOKEN`.
+- **Dolt.** Dolt runs inside the same container at `127.0.0.1:3307`,
+  auto-started by `entrypoint.sh`. You do not need to run `gt dolt start`.
+- **Starting the bot.** gt-bot **auto-starts** from `entrypoint.sh` whenever
+  `GT_BOT_TOKEN` (or `TELEGRAM_BOT_TOKEN`) is set — the entrypoint runs
+  `node bin/gt-bot init`, seeds `OPERATOR_TELEGRAM_CHAT_ID` as the first admin
+  if the permissions table is empty, and then launches the daemon. **You do
+  not run `node bin/gt-bot start` yourself.**
+- **Managing permissions.** Exec into the container:
+
+  ```bash
+  docker compose exec gastown /gastown/bot/bin/gt-bot perms list
+  docker compose exec gastown /gastown/bot/bin/gt-bot perms add <chat_id> --role admin
+  docker compose exec gastown /gastown/bot/bin/gt-bot perms remove <chat_id>
+  ```
+
+- **Reloading permissions without restarting the bot.** Inside the container:
+  `kill -HUP $(pgrep -f 'node.*gt-bot/bot.js')`.
+
+If you are running gt-bot standalone on a host (outside gasdepot), keep reading
+— the rest of this README covers that path.
 
 ## Requirements
 
