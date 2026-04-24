@@ -11,6 +11,8 @@
 // follow-up beads. See README.md.
 
 const http = require("http");
+const fs = require("fs");
+const { promises: fsp } = require("fs");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const { Bot } = require("grammy");
@@ -18,6 +20,14 @@ const { Bot } = require("grammy");
 const config = require("./config");
 
 const execFileAsync = promisify(execFile);
+
+// Mayor session — used by the busy-notice probe. Hardcoded layout
+// because the bot is shipped as part of mayor's stack; if mayor lives
+// somewhere else, set GT_MAYOR_CWD.
+const MAYOR_CWD = process.env.GT_MAYOR_CWD
+  || `${process.env.GT_TOWN_ROOT || "/gastown/repos/hq"}/mayor`;
+const CLAUDE_HOME = process.env.CLAUDE_HOME
+  || `${process.env.HOME || "/home/gastown"}/.claude`;
 
 // --- Permissions cache -------------------------------------------------
 
@@ -100,6 +110,265 @@ async function gtNudge(target, text) {
   });
 }
 
+// --- Busy-notice probe -------------------------------------------------
+//
+// Goal: when a user pings mayor, tell them inline if mayor is mid-work
+// so they don't sit watching a silent chat. We read the live Claude Code
+// transcript (jsonl) — every prompt and tool call is appended in real
+// time, so we can infer "busy" without communicating with mayor at all.
+//
+// Heuristic: mayor is BUSY iff the most recent activity was within the
+// last BUSY_WINDOW_SEC seconds AND the latest assistant message issued
+// at least one tool_use (so the agent is in a tool/result loop, not
+// awaiting a new user prompt). Anything older or any text-only assistant
+// reply means mayor is idle / between turns.
+
+const BUSY_WINDOW_SEC = 30;
+
+async function readMayorSessionId() {
+  try {
+    const buf = await fsp.readFile(`${MAYOR_CWD}/.runtime/session_id`, "utf8");
+    return buf.split("\n")[0].trim() || null;
+  } catch { return null; }
+}
+
+async function readTranscriptTail(sid, n = 50) {
+  if (!sid) return [];
+  // Claude Code project dir = cwd with `/` replaced by `-`.
+  const projDir = MAYOR_CWD.replace(/\//g, "-");
+  const file = `${CLAUDE_HOME}/projects/${projDir}/${sid}.jsonl`;
+  try {
+    const { stdout } = await execFileAsync("tail", ["-n", String(n), file], {
+      timeout: 2000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const out = [];
+    for (const line of stdout.split("\n")) {
+      if (!line) continue;
+      try { out.push(JSON.parse(line)); } catch { /* skip */ }
+    }
+    return out;
+  } catch { return []; }
+}
+
+function isFreshUserPrompt(ev) {
+  if (!ev) return false;
+  if (ev.type === "last-prompt") return true;
+  if (ev.type !== "user") return false;
+  const c = ev.message && ev.message.content;
+  if (!Array.isArray(c)) return false;
+  // tool_result wrappers aren't "user input" — they're mayor's own
+  // intermediate state. Only count user entries with non-tool_result text.
+  return c.some(p => p && p.type !== "tool_result");
+}
+
+function summarizeMayorBusy(entries) {
+  if (!entries.length) return null;
+  const last = entries[entries.length - 1];
+  const lastTs = Date.parse(last.timestamp || "");
+  if (!lastTs) return null;
+  const ageSec = (Date.now() - lastTs) / 1000;
+  if (ageSec > BUSY_WINDOW_SEC) return null;
+
+  // Walk back from the latest entry. Mayor is busy iff one of:
+  //   (a) we hit a fresh user prompt before finding any assistant turn —
+  //       new input arrived after mayor's last reply, mayor is about to
+  //       process it (this is the gap the previous heuristic missed)
+  //   (b) the most recent assistant turn issued a tool_use — mayor is
+  //       mid tool-call loop, not done responding
+  // Otherwise (latest assistant is text-only, no fresh prompt after it),
+  // mayor is idle waiting for the next prompt.
+  let sawFreshPromptSinceLastAssistant = false;
+  let busy = false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.type === "assistant") {
+      const content = e.message && Array.isArray(e.message.content) ? e.message.content : [];
+      const hasToolUse = content.some(p => p && p.type === "tool_use");
+      busy = sawFreshPromptSinceLastAssistant || hasToolUse;
+      break;
+    }
+    if (isFreshUserPrompt(e)) sawFreshPromptSinceLastAssistant = true;
+  }
+  // Fresh session with pending input but no assistant turn yet.
+  if (!busy && sawFreshPromptSinceLastAssistant) busy = true;
+  if (!busy) return null;
+
+  // Find the user prompt mayor is processing — last-prompt entry, or
+  // failing that, the last text-bearing user message.
+  let task = null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.type === "last-prompt") {
+      task = e.lastPrompt || e.text;
+      break;
+    }
+    if (e.type === "user" && e.message && Array.isArray(e.message.content)) {
+      const text = e.message.content
+        .filter(p => p && p.type !== "tool_result")
+        .map(p => (typeof p === "string" ? p : p.text || ""))
+        .filter(Boolean).join(" ").trim();
+      if (text) { task = text; break; }
+    }
+  }
+  return { task: (task || "an unspecified task").replace(/\s+/g, " ").slice(0, 140) };
+}
+
+async function detectMayorBusy() {
+  try {
+    const sid = await readMayorSessionId();
+    const entries = await readTranscriptTail(sid);
+    return summarizeMayorBusy(entries);
+  } catch (err) {
+    if (process.env.DEBUG) console.error("busy detect failed:", err.message);
+    return null;
+  }
+}
+
+async function maybeBusyNotice(ctx, userText) {
+  const busy = await detectMayorBusy();
+  if (!busy) return false;
+  const text = `🎩 Mayor is busy working on: ${busy.task}\n\nYour message is queued — he'll get back to you shortly.`;
+  try {
+    await ctx.reply(text);
+  } catch (err) {
+    console.error("busy notice send failed:", err.message);
+    return false;
+  }
+  rememberPendingBack(String(ctx.chat.id), userText);
+  return true;
+}
+
+// --- Back-notice watcher -----------------------------------------------
+//
+// Companion to maybeBusyNotice: when we tell the user "queued", we should
+// also tell them when mayor actually starts on their message. We remember
+// each (chat, text) the busy-notice fired for, then poll mayor's
+// transcript for new last-prompt / user entries that include the text.
+// First match wins: send "Mayor is back, starting on …" and forget.
+//
+// State is in-memory. A bot restart drops pending back-notices — the
+// user's queued message still reaches mayor (mail is durable), they just
+// won't get the second heads-up.
+
+const pendingBackNotices = new Map();
+const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
+const REBIND_INTERVAL_MS = 30000; // re-resolve mayor's session id periodically
+
+function rememberPendingBack(chatId, text) {
+  if (!text) return;
+  // Key by chat + a prefix so multiple distinct messages from the same
+  // user can each get their own back-notice without colliding.
+  const key = `${chatId}:${text.slice(0, 80)}`;
+  pendingBackNotices.set(key, { chatId, text, sentAt: Date.now() });
+  // Opportunistic GC of stale entries.
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  for (const [k, v] of pendingBackNotices) {
+    if (v.sentAt < cutoff) pendingBackNotices.delete(k);
+  }
+}
+
+function extractPromptText(ev) {
+  if (!ev) return null;
+  if (ev.type === "last-prompt") return ev.lastPrompt || ev.text || null;
+  if (ev.type === "user" && ev.message && Array.isArray(ev.message.content)) {
+    return ev.message.content
+      .filter(p => p && p.type !== "tool_result")
+      .map(p => typeof p === "string" ? p : p.text || "")
+      .filter(Boolean).join(" ");
+  }
+  return null;
+}
+
+function startTranscriptWatcher(bot) {
+  let watcher = null;
+  let watchedFile = null;
+  let lastSize = 0;
+  let lastSid = null;
+  let processing = false;
+
+  async function consumeNewBytes() {
+    if (processing || !watchedFile) return;
+    processing = true;
+    try {
+      const stat = await fsp.stat(watchedFile).catch(() => null);
+      if (!stat || stat.size <= lastSize) return;
+
+      // Always advance the cursor — we don't want to re-scan if a later
+      // event finds new pending notices but the bytes are old.
+      const start = lastSize;
+      const end = stat.size;
+      lastSize = end;
+      if (pendingBackNotices.size === 0) return;
+
+      const fh = await fsp.open(watchedFile, "r");
+      let chunk;
+      try {
+        const buf = Buffer.alloc(end - start);
+        await fh.read(buf, 0, buf.length, start);
+        chunk = buf.toString("utf8");
+      } finally { await fh.close(); }
+
+      for (const line of chunk.split("\n")) {
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        const prompt = extractPromptText(ev);
+        if (!prompt) continue;
+        for (const [key, pending] of pendingBackNotices) {
+          const needle = pending.text.slice(0, 80);
+          if (needle && prompt.includes(needle)) {
+            const summary = pending.text.replace(/\s+/g, " ").slice(0, 140);
+            // Fire-and-forget: don't block subsequent matches on Telegram I/O.
+            bot.api.sendMessage(pending.chatId, `🎩 Mayor is back, starting on: ${summary}`)
+              .then(() => console.log(`back-notice sent to ${pending.chatId}`))
+              .catch(err => console.error("back notice send failed:", err.message));
+            pendingBackNotices.delete(key);
+          }
+        }
+      }
+    } catch (err) {
+      if (process.env.DEBUG) console.error("watcher consume failed:", err.message);
+    } finally {
+      processing = false;
+    }
+  }
+
+  async function rebind() {
+    try {
+      const sid = await readMayorSessionId();
+      if (sid === lastSid && watcher) return;
+      if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+      lastSid = sid;
+      if (!sid) return;
+      const projDir = MAYOR_CWD.replace(/\//g, "-");
+      const file = `${CLAUDE_HOME}/projects/${projDir}/${sid}.jsonl`;
+      const stat = await fsp.stat(file).catch(() => null);
+      if (!stat) return;
+      watchedFile = file;
+      lastSize = stat.size; // start at the tail
+      try {
+        watcher = fs.watch(file, { persistent: false }, (eventType) => {
+          if (eventType === "change") consumeNewBytes();
+        });
+      } catch (err) {
+        console.error("fs.watch failed:", err.message);
+      }
+    } catch (err) {
+      if (process.env.DEBUG) console.error("watcher rebind failed:", err.message);
+    }
+  }
+
+  rebind();
+  const interval = setInterval(rebind, REBIND_INTERVAL_MS);
+  interval.unref();
+  // Returned so tests can shut the watcher down between cases.
+  return () => {
+    clearInterval(interval);
+    if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+  };
+}
+
 // --- Inbound: Telegram text -> gt mail ---------------------------------
 
 async function handleTelegramText(ctx) {
@@ -111,6 +380,12 @@ async function handleTelegramText(ctx) {
 
   const from = ctx.from?.first_name || ctx.from?.username || "unknown";
   const text = ctx.message.text || "";
+
+  // Race the busy-notice with the forwarding work — if mayor is mid-turn,
+  // the user gets a heads-up before mayor processes the queued message.
+  // Passing `text` lets the back-notice watcher recognize when mayor
+  // actually starts on it.
+  const busyNoticePromise = maybeBusyNotice(ctx, text);
   const rigs = allowedRigs(chatId);
   const rigScope = rigs.includes("*") ? null : rigs;
 
@@ -135,6 +410,9 @@ async function handleTelegramText(ctx) {
     // Nudge failure is non-fatal — the mail is already durable.
     console.error("gt nudge failed (non-fatal):", err.message);
   }
+
+  // Don't leak an unhandled rejection if the busy-notice send threw.
+  await busyNoticePromise.catch(() => {});
 
   console.log(`forwarded to mayor: ${subject}`);
 }
@@ -184,6 +462,11 @@ async function handleSend(bot, req, res) {
 
   const delivered = [];
   for (const id of targets) {
+    // If mayor is replying to this chat, mayor is "back" — flush any
+    // pending back-notices for this chat BEFORE the reply so Telegram
+    // delivers them in the right order. The fs.watch path may have
+    // already won the race; if so, this is a no-op.
+    await flushBackNoticesForChat(bot, id);
     try {
       await bot.api.sendMessage(id, message);
       delivered.push({ chat: id, ok: true });
@@ -193,6 +476,24 @@ async function handleSend(bot, req, res) {
   }
   console.log(`HTTP /send: "${message.slice(0, 60)}" -> ${targets.join(",")}`);
   jsonResponse(res, 200, { ok: true, delivered });
+}
+
+async function flushBackNoticesForChat(bot, chatId) {
+  const targetId = String(chatId);
+  const matches = [];
+  for (const [key, pending] of pendingBackNotices) {
+    if (String(pending.chatId) === targetId) matches.push([key, pending]);
+  }
+  for (const [key, pending] of matches) {
+    pendingBackNotices.delete(key); // claim before send so the watcher won't double-fire
+    const summary = pending.text.replace(/\s+/g, " ").slice(0, 140);
+    try {
+      await bot.api.sendMessage(targetId, `🎩 Mayor is back, starting on: ${summary}`);
+      console.log(`back-notice (flushed ahead of reply) sent to ${targetId}`);
+    } catch (err) {
+      console.error("back notice (flush) send failed:", err.message);
+    }
+  }
 }
 
 function startHttpServer(bot) {
@@ -254,6 +555,7 @@ async function main() {
   });
 
   startHttpServer(bot);
+  startTranscriptWatcher(bot);
 
   // Run Telegram polling alongside HTTP. A polling failure (bad token,
   // network blip) logs but does not tear down the HTTP server — mayor can
@@ -270,7 +572,24 @@ async function main() {
   // does this, but be explicit for clarity).
 }
 
-module.exports = { main };
+module.exports = {
+  main,
+  // Not a stable API — exposed so tests can drive handlers and inspect
+  // module-scoped state without spinning up a real bot or Dolt.
+  __test: {
+    summarizeMayorBusy,
+    extractPromptText,
+    detectMayorBusy,
+    maybeBusyNotice,
+    rememberPendingBack,
+    startTranscriptWatcher,
+    handleTelegramText,
+    handleSend,
+    flushBackNoticesForChat,
+    pendingBackNotices,
+    setPerms: (p) => { perms = p; },
+  },
+};
 
 if (require.main === module) {
   main().catch((err) => {

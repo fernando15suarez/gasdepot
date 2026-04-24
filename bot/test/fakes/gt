@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fake `gt` used by the bot's tests. Records every invocation (argv +
+# stdin if passed) to $GT_FAKE_LOG, then exits 0. Never touches Dolt, mail,
+# or any real Gas Town state.
+set -euo pipefail
+
+LOG="${GT_FAKE_LOG:-/dev/null}"
+{
+  printf 'ARGV\t'
+  printf '%s\t' "$@"
+  printf '\n'
+} >>"$LOG"
+
+# --help calls used for gtAvailable() probing don't get stdin. Skip.
+for a in "$@"; do
+  if [[ "$a" == "--stdin" ]]; then
+    printf 'STDIN\t'
+    cat
+    printf '\n'
+    break
+  fi
+done >>"$LOG"
+
+exit 0
