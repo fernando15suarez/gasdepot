@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node bot.js",
-    "init": "node bin/gt-bot init"
+    "init": "node bin/gt-bot init",
+    "test": "node --test 'test/*.test.js'"
   },
   "engines": {
     "node": ">=18"

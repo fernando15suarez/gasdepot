@@ -151,6 +151,17 @@ async function readTranscriptTail(sid, n = 50) {
   } catch { return []; }
 }
 
+function isFreshUserPrompt(ev) {
+  if (!ev) return false;
+  if (ev.type === "last-prompt") return true;
+  if (ev.type !== "user") return false;
+  const c = ev.message && ev.message.content;
+  if (!Array.isArray(c)) return false;
+  // tool_result wrappers aren't "user input" — they're mayor's own
+  // intermediate state. Only count user entries with non-tool_result text.
+  return c.some(p => p && p.type !== "tool_result");
+}
+
 function summarizeMayorBusy(entries) {
   if (!entries.length) return null;
   const last = entries[entries.length - 1];
@@ -159,30 +170,29 @@ function summarizeMayorBusy(entries) {
   const ageSec = (Date.now() - lastTs) / 1000;
   if (ageSec > BUSY_WINDOW_SEC) return null;
 
-  // Look back for the most recent assistant entry; busy iff it has a
-  // tool_use part (i.e. mayor is mid tool-call loop, not done responding).
-  let lastAssistantHasToolUse = false;
-  let foundAssistant = false;
+  // Walk back from the latest entry. Mayor is busy iff one of:
+  //   (a) we hit a fresh user prompt before finding any assistant turn —
+  //       new input arrived after mayor's last reply, mayor is about to
+  //       process it (this is the gap the previous heuristic missed)
+  //   (b) the most recent assistant turn issued a tool_use — mayor is
+  //       mid tool-call loop, not done responding
+  // Otherwise (latest assistant is text-only, no fresh prompt after it),
+  // mayor is idle waiting for the next prompt.
+  let sawFreshPromptSinceLastAssistant = false;
+  let busy = false;
   for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].type !== "assistant") continue;
-    const content = entries[i].message?.content;
-    if (!Array.isArray(content)) continue;
-    foundAssistant = true;
-    lastAssistantHasToolUse = content.some(p => p && p.type === "tool_use");
-    break;
+    const e = entries[i];
+    if (e.type === "assistant") {
+      const content = e.message && Array.isArray(e.message.content) ? e.message.content : [];
+      const hasToolUse = content.some(p => p && p.type === "tool_use");
+      busy = sawFreshPromptSinceLastAssistant || hasToolUse;
+      break;
+    }
+    if (isFreshUserPrompt(e)) sawFreshPromptSinceLastAssistant = true;
   }
-  // No assistant turn yet but recent activity = mayor just got a prompt
-  // and hasn't started replying. Treat as busy (likely about to be).
-  if (!foundAssistant) {
-    // Only if there's a recent user prompt
-    const hasRecentUser = entries.some(e =>
-      e.type === "user" && e.message && Array.isArray(e.message.content) &&
-      e.message.content.some(p => p && p.type !== "tool_result")
-    );
-    if (!hasRecentUser) return null;
-  } else if (!lastAssistantHasToolUse) {
-    return null; // text-only assistant = end of turn = idle
-  }
+  // Fresh session with pending input but no assistant turn yet.
+  if (!busy && sawFreshPromptSinceLastAssistant) busy = true;
+  if (!busy) return null;
 
   // Find the user prompt mayor is processing — last-prompt entry, or
   // failing that, the last text-bearing user message.
@@ -350,7 +360,13 @@ function startTranscriptWatcher(bot) {
   }
 
   rebind();
-  setInterval(rebind, REBIND_INTERVAL_MS).unref();
+  const interval = setInterval(rebind, REBIND_INTERVAL_MS);
+  interval.unref();
+  // Returned so tests can shut the watcher down between cases.
+  return () => {
+    clearInterval(interval);
+    if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+  };
 }
 
 // --- Inbound: Telegram text -> gt mail ---------------------------------
@@ -533,7 +549,22 @@ async function main() {
   // does this, but be explicit for clarity).
 }
 
-module.exports = { main };
+module.exports = {
+  main,
+  // Not a stable API — exposed so tests can drive handlers and inspect
+  // module-scoped state without spinning up a real bot or Dolt.
+  __test: {
+    summarizeMayorBusy,
+    extractPromptText,
+    detectMayorBusy,
+    maybeBusyNotice,
+    rememberPendingBack,
+    startTranscriptWatcher,
+    handleTelegramText,
+    pendingBackNotices,
+    setPerms: (p) => { perms = p; },
+  },
+};
 
 if (require.main === module) {
   main().catch((err) => {
