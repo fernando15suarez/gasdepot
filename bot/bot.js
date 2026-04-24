@@ -214,12 +214,115 @@ async function detectMayorBusy() {
   }
 }
 
-async function maybeBusyNotice(ctx) {
+async function maybeBusyNotice(ctx, userText) {
   const busy = await detectMayorBusy();
-  if (!busy) return;
+  if (!busy) return false;
   const text = `🎩 Mayor is busy working on: ${busy.task}\n\nYour message is queued — he'll get back to you shortly.`;
-  try { await ctx.reply(text); }
-  catch (err) { console.error("busy notice send failed:", err.message); }
+  try {
+    await ctx.reply(text);
+  } catch (err) {
+    console.error("busy notice send failed:", err.message);
+    return false;
+  }
+  rememberPendingBack(String(ctx.chat.id), userText);
+  return true;
+}
+
+// --- Back-notice watcher -----------------------------------------------
+//
+// Companion to maybeBusyNotice: when we tell the user "queued", we should
+// also tell them when mayor actually starts on their message. We remember
+// each (chat, text) the busy-notice fired for, then poll mayor's
+// transcript for new last-prompt / user entries that include the text.
+// First match wins: send "Mayor is back, starting on …" and forget.
+//
+// State is in-memory. A bot restart drops pending back-notices — the
+// user's queued message still reaches mayor (mail is durable), they just
+// won't get the second heads-up.
+
+const pendingBackNotices = new Map();
+const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
+const WATCHER_INTERVAL_MS = 2000;
+
+function rememberPendingBack(chatId, text) {
+  if (!text) return;
+  // Key by chat + a prefix so multiple distinct messages from the same
+  // user can each get their own back-notice without colliding.
+  const key = `${chatId}:${text.slice(0, 80)}`;
+  pendingBackNotices.set(key, { chatId, text, sentAt: Date.now() });
+  // Opportunistic GC of stale entries.
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  for (const [k, v] of pendingBackNotices) {
+    if (v.sentAt < cutoff) pendingBackNotices.delete(k);
+  }
+}
+
+function extractPromptText(ev) {
+  if (!ev) return null;
+  if (ev.type === "last-prompt") return ev.lastPrompt || ev.text || null;
+  if (ev.type === "user" && ev.message && Array.isArray(ev.message.content)) {
+    return ev.message.content
+      .filter(p => p && p.type !== "tool_result")
+      .map(p => typeof p === "string" ? p : p.text || "")
+      .filter(Boolean).join(" ");
+  }
+  return null;
+}
+
+function startTranscriptWatcher(bot) {
+  let lastSize = null;
+  let lastSid = null;
+  setInterval(async () => {
+    try {
+      const sid = await readMayorSessionId();
+      if (sid !== lastSid) { lastSize = null; lastSid = sid; }
+      if (!sid) return;
+      const projDir = MAYOR_CWD.replace(/\//g, "-");
+      const file = `${CLAUDE_HOME}/projects/${projDir}/${sid}.jsonl`;
+      const stat = await fsp.stat(file).catch(() => null);
+      if (!stat) return;
+      if (lastSize === null) { lastSize = stat.size; return; } // baseline only
+      if (stat.size <= lastSize) return;
+
+      // Always advance the cursor, even if we skip the parse, so we don't
+      // re-scan the same bytes next tick.
+      const start = lastSize;
+      const end = stat.size;
+      lastSize = end;
+      if (pendingBackNotices.size === 0) return;
+
+      const fh = await fsp.open(file, "r");
+      let chunk;
+      try {
+        const buf = Buffer.alloc(end - start);
+        await fh.read(buf, 0, buf.length, start);
+        chunk = buf.toString("utf8");
+      } finally { await fh.close(); }
+
+      for (const line of chunk.split("\n")) {
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        const prompt = extractPromptText(ev);
+        if (!prompt) continue;
+        for (const [key, pending] of pendingBackNotices) {
+          const needle = pending.text.slice(0, 80);
+          if (needle && prompt.includes(needle)) {
+            const summary = pending.text.replace(/\s+/g, " ").slice(0, 140);
+            try {
+              await bot.api.sendMessage(pending.chatId, `🎩 Mayor is back, starting on: ${summary}`);
+              console.log(`back-notice sent to ${pending.chatId}`);
+            } catch (err) {
+              console.error("back notice send failed:", err.message);
+            }
+            pendingBackNotices.delete(key);
+          }
+        }
+      }
+    } catch (err) {
+      if (process.env.DEBUG) console.error("transcript watcher tick failed:", err.message);
+    }
+  }, WATCHER_INTERVAL_MS).unref(); // don't keep the process alive on its own
 }
 
 // --- Inbound: Telegram text -> gt mail ---------------------------------
@@ -231,12 +334,14 @@ async function handleTelegramText(ctx) {
     return;
   }
 
-  // Race the busy-notice with the forwarding work — if mayor is mid-turn,
-  // the user gets a heads-up before mayor processes the queued message.
-  const busyNoticePromise = maybeBusyNotice(ctx);
-
   const from = ctx.from?.first_name || ctx.from?.username || "unknown";
   const text = ctx.message.text || "";
+
+  // Race the busy-notice with the forwarding work — if mayor is mid-turn,
+  // the user gets a heads-up before mayor processes the queued message.
+  // Passing `text` lets the back-notice watcher recognize when mayor
+  // actually starts on it.
+  const busyNoticePromise = maybeBusyNotice(ctx, text);
   const rigs = allowedRigs(chatId);
   const rigScope = rigs.includes("*") ? null : rigs;
 
@@ -383,6 +488,7 @@ async function main() {
   });
 
   startHttpServer(bot);
+  startTranscriptWatcher(bot);
 
   // Run Telegram polling alongside HTTP. A polling failure (bad token,
   // network blip) logs but does not tear down the HTTP server — mayor can
