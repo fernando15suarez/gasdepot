@@ -462,6 +462,11 @@ async function handleSend(bot, req, res) {
 
   const delivered = [];
   for (const id of targets) {
+    // If mayor is replying to this chat, mayor is "back" — flush any
+    // pending back-notices for this chat BEFORE the reply so Telegram
+    // delivers them in the right order. The fs.watch path may have
+    // already won the race; if so, this is a no-op.
+    await flushBackNoticesForChat(bot, id);
     try {
       await bot.api.sendMessage(id, message);
       delivered.push({ chat: id, ok: true });
@@ -471,6 +476,24 @@ async function handleSend(bot, req, res) {
   }
   console.log(`HTTP /send: "${message.slice(0, 60)}" -> ${targets.join(",")}`);
   jsonResponse(res, 200, { ok: true, delivered });
+}
+
+async function flushBackNoticesForChat(bot, chatId) {
+  const targetId = String(chatId);
+  const matches = [];
+  for (const [key, pending] of pendingBackNotices) {
+    if (String(pending.chatId) === targetId) matches.push([key, pending]);
+  }
+  for (const [key, pending] of matches) {
+    pendingBackNotices.delete(key); // claim before send so the watcher won't double-fire
+    const summary = pending.text.replace(/\s+/g, " ").slice(0, 140);
+    try {
+      await bot.api.sendMessage(targetId, `🎩 Mayor is back, starting on: ${summary}`);
+      console.log(`back-notice (flushed ahead of reply) sent to ${targetId}`);
+    } catch (err) {
+      console.error("back notice (flush) send failed:", err.message);
+    }
+  }
 }
 
 function startHttpServer(bot) {
@@ -561,6 +584,8 @@ module.exports = {
     rememberPendingBack,
     startTranscriptWatcher,
     handleTelegramText,
+    handleSend,
+    flushBackNoticesForChat,
     pendingBackNotices,
     setPerms: (p) => { perms = p; },
   },

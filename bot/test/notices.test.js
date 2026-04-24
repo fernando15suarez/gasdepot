@@ -38,9 +38,12 @@ const {
   maybeBusyNotice,
   rememberPendingBack,
   startTranscriptWatcher,
+  flushBackNoticesForChat,
+  handleSend,
   pendingBackNotices,
   setPerms,
 } = __test;
+const { makeReq, makeRes } = require("./helpers");
 
 // --- Helpers for transcript tests --------------------------------------
 
@@ -232,6 +235,51 @@ test("startTranscriptWatcher: ignores transcript writes that don't match any pen
     assert.equal(bot.api.calls.length, 0);
     assert.equal(pendingBackNotices.size, 1, "pending should remain");
   } finally { stop(); }
+});
+
+// --- /send flushes back-notices ahead of mayor's reply ---------------
+
+async function driveHttp(handler, bot, req) {
+  const res = makeRes();
+  const p = handler(bot, req, res);
+  req.emit();
+  await p;
+  return res;
+}
+
+test("flushBackNoticesForChat: sends pending notice for the matching chat only", async () => {
+  pendingBackNotices.clear();
+  rememberPendingBack("100", "for chat 100");
+  rememberPendingBack("200", "for chat 200");
+  const bot = { api: makeBotApi() };
+  await flushBackNoticesForChat(bot, "100");
+  assert.equal(bot.api.calls.length, 1);
+  assert.equal(bot.api.calls[0].chatId, "100");
+  assert.match(bot.api.calls[0].content, /for chat 100/);
+  assert.equal(pendingBackNotices.size, 1, "chat 200 entry remains");
+});
+
+test("handleSend: back-notice fires BEFORE the reply (race fix)", async () => {
+  setPerms({ "5": { role: "admin", rigs: ["*"] } });
+  pendingBackNotices.clear();
+  rememberPendingBack("5", "your queued message");
+  const bot = { api: makeBotApi() };
+  const res = await driveHttp(handleSend, bot, makeReq(JSON.stringify({ message: "here is my reply", chat: 5 })));
+  assert.equal(res.statusCode, 200);
+  // First send must be the back-notice; second must be the actual reply.
+  assert.equal(bot.api.calls.length, 2);
+  assert.match(bot.api.calls[0].content, /Mayor is back/);
+  assert.equal(bot.api.calls[1].content, "here is my reply");
+});
+
+test("handleSend: no back-notice when none pending for that chat", async () => {
+  setPerms({ "7": { role: "admin", rigs: ["*"] } });
+  pendingBackNotices.clear();
+  const bot = { api: makeBotApi() };
+  const res = await driveHttp(handleSend, bot, makeReq(JSON.stringify({ message: "hi", chat: 7 })));
+  assert.equal(res.statusCode, 200);
+  assert.equal(bot.api.calls.length, 1);
+  assert.equal(bot.api.calls[0].content, "hi");
 });
 
 test("rememberPendingBack: GCs entries older than the TTL", () => {
