@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fake `ffmpeg` used by the voice tests. Just creates an empty WAV file at
+# the output path and exits 0. The fake whisper-cli doesn't read it either.
+set -euo pipefail
+
+# Output path is the last positional arg.
+out=""
+for arg in "$@"; do out="${arg}"; done
+: > "${out}"
+exit 0
