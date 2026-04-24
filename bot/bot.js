@@ -790,16 +790,24 @@ module.exports = {
   // Not a stable API — exposed so tests can drive handlers and inspect
   // module-scoped state without spinning up a real bot or Dolt.
   __test: {
+    // Busy/back-notice helpers
     summarizeMayorBusy,
     extractPromptText,
     detectMayorBusy,
     maybeBusyNotice,
     rememberPendingBack,
     startTranscriptWatcher,
-    handleTelegramText,
-    handleSend,
     flushBackNoticesForChat,
     pendingBackNotices,
+    // File-handling helpers
+    extractMedia,
+    safeFilename,
+    guessKindFromExt,
+    handleTelegramMedia,
+    handleSendFile,
+    // Common
+    handleTelegramText,
+    handleSend,
     setPerms: (p) => { perms = p; },
   },
 };
