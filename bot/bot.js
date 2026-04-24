@@ -11,6 +11,7 @@
 // follow-up beads. See README.md.
 
 const http = require("http");
+const { promises: fsp } = require("fs");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const { Bot } = require("grammy");
@@ -18,6 +19,14 @@ const { Bot } = require("grammy");
 const config = require("./config");
 
 const execFileAsync = promisify(execFile);
+
+// Mayor session — used by the busy-notice probe. Hardcoded layout
+// because the bot is shipped as part of mayor's stack; if mayor lives
+// somewhere else, set GT_MAYOR_CWD.
+const MAYOR_CWD = process.env.GT_MAYOR_CWD
+  || `${process.env.GT_TOWN_ROOT || "/gastown/repos/hq"}/mayor`;
+const CLAUDE_HOME = process.env.CLAUDE_HOME
+  || `${process.env.HOME || "/home/gastown"}/.claude`;
 
 // --- Permissions cache -------------------------------------------------
 
@@ -100,6 +109,119 @@ async function gtNudge(target, text) {
   });
 }
 
+// --- Busy-notice probe -------------------------------------------------
+//
+// Goal: when a user pings mayor, tell them inline if mayor is mid-work
+// so they don't sit watching a silent chat. We read the live Claude Code
+// transcript (jsonl) — every prompt and tool call is appended in real
+// time, so we can infer "busy" without communicating with mayor at all.
+//
+// Heuristic: mayor is BUSY iff the most recent activity was within the
+// last BUSY_WINDOW_SEC seconds AND the latest assistant message issued
+// at least one tool_use (so the agent is in a tool/result loop, not
+// awaiting a new user prompt). Anything older or any text-only assistant
+// reply means mayor is idle / between turns.
+
+const BUSY_WINDOW_SEC = 30;
+
+async function readMayorSessionId() {
+  try {
+    const buf = await fsp.readFile(`${MAYOR_CWD}/.runtime/session_id`, "utf8");
+    return buf.split("\n")[0].trim() || null;
+  } catch { return null; }
+}
+
+async function readTranscriptTail(sid, n = 50) {
+  if (!sid) return [];
+  // Claude Code project dir = cwd with `/` replaced by `-`.
+  const projDir = MAYOR_CWD.replace(/\//g, "-");
+  const file = `${CLAUDE_HOME}/projects/${projDir}/${sid}.jsonl`;
+  try {
+    const { stdout } = await execFileAsync("tail", ["-n", String(n), file], {
+      timeout: 2000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const out = [];
+    for (const line of stdout.split("\n")) {
+      if (!line) continue;
+      try { out.push(JSON.parse(line)); } catch { /* skip */ }
+    }
+    return out;
+  } catch { return []; }
+}
+
+function summarizeMayorBusy(entries) {
+  if (!entries.length) return null;
+  const last = entries[entries.length - 1];
+  const lastTs = Date.parse(last.timestamp || "");
+  if (!lastTs) return null;
+  const ageSec = (Date.now() - lastTs) / 1000;
+  if (ageSec > BUSY_WINDOW_SEC) return null;
+
+  // Look back for the most recent assistant entry; busy iff it has a
+  // tool_use part (i.e. mayor is mid tool-call loop, not done responding).
+  let lastAssistantHasToolUse = false;
+  let foundAssistant = false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].type !== "assistant") continue;
+    const content = entries[i].message?.content;
+    if (!Array.isArray(content)) continue;
+    foundAssistant = true;
+    lastAssistantHasToolUse = content.some(p => p && p.type === "tool_use");
+    break;
+  }
+  // No assistant turn yet but recent activity = mayor just got a prompt
+  // and hasn't started replying. Treat as busy (likely about to be).
+  if (!foundAssistant) {
+    // Only if there's a recent user prompt
+    const hasRecentUser = entries.some(e =>
+      e.type === "user" && e.message && Array.isArray(e.message.content) &&
+      e.message.content.some(p => p && p.type !== "tool_result")
+    );
+    if (!hasRecentUser) return null;
+  } else if (!lastAssistantHasToolUse) {
+    return null; // text-only assistant = end of turn = idle
+  }
+
+  // Find the user prompt mayor is processing — last-prompt entry, or
+  // failing that, the last text-bearing user message.
+  let task = null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.type === "last-prompt") {
+      task = e.lastPrompt || e.text;
+      break;
+    }
+    if (e.type === "user" && e.message && Array.isArray(e.message.content)) {
+      const text = e.message.content
+        .filter(p => p && p.type !== "tool_result")
+        .map(p => (typeof p === "string" ? p : p.text || ""))
+        .filter(Boolean).join(" ").trim();
+      if (text) { task = text; break; }
+    }
+  }
+  return { task: (task || "an unspecified task").replace(/\s+/g, " ").slice(0, 140) };
+}
+
+async function detectMayorBusy() {
+  try {
+    const sid = await readMayorSessionId();
+    const entries = await readTranscriptTail(sid);
+    return summarizeMayorBusy(entries);
+  } catch (err) {
+    if (process.env.DEBUG) console.error("busy detect failed:", err.message);
+    return null;
+  }
+}
+
+async function maybeBusyNotice(ctx) {
+  const busy = await detectMayorBusy();
+  if (!busy) return;
+  const text = `🎩 Mayor is busy working on: ${busy.task}\n\nYour message is queued — he'll get back to you shortly.`;
+  try { await ctx.reply(text); }
+  catch (err) { console.error("busy notice send failed:", err.message); }
+}
+
 // --- Inbound: Telegram text -> gt mail ---------------------------------
 
 async function handleTelegramText(ctx) {
@@ -108,6 +230,10 @@ async function handleTelegramText(ctx) {
     if (process.env.DEBUG) console.log(`[debug] ignoring chat ${chatId}`);
     return;
   }
+
+  // Race the busy-notice with the forwarding work — if mayor is mid-turn,
+  // the user gets a heads-up before mayor processes the queued message.
+  const busyNoticePromise = maybeBusyNotice(ctx);
 
   const from = ctx.from?.first_name || ctx.from?.username || "unknown";
   const text = ctx.message.text || "";
@@ -135,6 +261,9 @@ async function handleTelegramText(ctx) {
     // Nudge failure is non-fatal — the mail is already durable.
     console.error("gt nudge failed (non-fatal):", err.message);
   }
+
+  // Don't leak an unhandled rejection if the busy-notice send threw.
+  await busyNoticePromise.catch(() => {});
 
   console.log(`forwarded to mayor: ${subject}`);
 }
