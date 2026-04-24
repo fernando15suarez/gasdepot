@@ -15,6 +15,8 @@ const {
   makeBotApi,
   makeGtLog,
   readGtLog,
+  installFakeFetch,
+  setActiveFakeFetchCtx,
 } = require("./helpers");
 
 // Swap in fake gt + a scratch inbox BEFORE requiring bot.js — handlers
@@ -27,6 +29,11 @@ process.env.GT_FAKE_LOG = GT.log;
 const INBOX = fs.mkdtempSync(path.join(os.tmpdir(), "gt-bot-inbox-"));
 process.env.GT_BOT_INBOX_DIR = INBOX;
 process.env.GT_TOWN_ROOT = "/tmp";  // keeps gtEnv.cwd inside a real dir
+
+// Replace global fetch so handleTelegramMedia's downloadTelegramFile call
+// hits a stub instead of api.telegram.org. The active ctx (set per test)
+// supplies the bytes the stub returns.
+installFakeFetch();
 
 const { __test } = require("../bot");
 const {
@@ -144,6 +151,7 @@ test("handleTelegramMedia: downloads file, mails mayor, no reply on success", as
     caption: "selfie",
     file: { bytes },
   });
+  setActiveFakeFetchCtx(ctx);
   await handleTelegramMedia(ctx);
 
   const saved = fs.readdirSync(INBOX).filter(f => f.endsWith("photo-b.jpg"));
