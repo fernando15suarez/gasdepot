@@ -464,6 +464,19 @@ function safeFilename(name) {
   return (name || "file").replace(/[^\w.\-]/g, "_").slice(0, 120) || "file";
 }
 
+// Fetch a file from Telegram's CDN given the token and the file_path
+// returned by getFile(). Uses Node's built-in fetch (Node 18+) so we avoid
+// pulling in @grammyjs/files just for download() sugar.
+async function downloadTelegramFile(token, filePath, destPath) {
+  if (!token) throw new Error("missing bot token for file download");
+  if (!filePath) throw new Error("missing file_path from getFile()");
+  const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Telegram file CDN returned ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  await fsp.writeFile(destPath, buf);
+}
+
 async function handleTelegramMedia(ctx) {
   const chatId = String(ctx.chat.id);
   if (!isAuthorized(chatId)) {
@@ -481,7 +494,10 @@ async function handleTelegramMedia(ctx) {
   try {
     await fsp.mkdir(INBOX_DIR, { recursive: true });
     const file = await ctx.getFile();
-    await file.download(destPath);
+    // ctx.getFile() returns a plain File descriptor with file_path; the
+    // .download() helper only exists with @grammyjs/files installed. We
+    // do the download ourselves to avoid the extra dependency.
+    await downloadTelegramFile(ctx.api.token, file.file_path, destPath);
   } catch (err) {
     console.error("file download failed:", err.message);
     try { await ctx.reply("Failed to download attachment."); } catch {}
