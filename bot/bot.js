@@ -11,6 +11,7 @@
 // follow-up beads. See README.md.
 
 const http = require("http");
+const fs = require("fs");
 const { promises: fsp } = require("fs");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
@@ -242,7 +243,7 @@ async function maybeBusyNotice(ctx, userText) {
 
 const pendingBackNotices = new Map();
 const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
-const WATCHER_INTERVAL_MS = 2000;
+const REBIND_INTERVAL_MS = 30000; // re-resolve mayor's session id periodically
 
 function rememberPendingBack(chatId, text) {
   if (!text) return;
@@ -270,28 +271,27 @@ function extractPromptText(ev) {
 }
 
 function startTranscriptWatcher(bot) {
-  let lastSize = null;
+  let watcher = null;
+  let watchedFile = null;
+  let lastSize = 0;
   let lastSid = null;
-  setInterval(async () => {
-    try {
-      const sid = await readMayorSessionId();
-      if (sid !== lastSid) { lastSize = null; lastSid = sid; }
-      if (!sid) return;
-      const projDir = MAYOR_CWD.replace(/\//g, "-");
-      const file = `${CLAUDE_HOME}/projects/${projDir}/${sid}.jsonl`;
-      const stat = await fsp.stat(file).catch(() => null);
-      if (!stat) return;
-      if (lastSize === null) { lastSize = stat.size; return; } // baseline only
-      if (stat.size <= lastSize) return;
+  let processing = false;
 
-      // Always advance the cursor, even if we skip the parse, so we don't
-      // re-scan the same bytes next tick.
+  async function consumeNewBytes() {
+    if (processing || !watchedFile) return;
+    processing = true;
+    try {
+      const stat = await fsp.stat(watchedFile).catch(() => null);
+      if (!stat || stat.size <= lastSize) return;
+
+      // Always advance the cursor — we don't want to re-scan if a later
+      // event finds new pending notices but the bytes are old.
       const start = lastSize;
       const end = stat.size;
       lastSize = end;
       if (pendingBackNotices.size === 0) return;
 
-      const fh = await fsp.open(file, "r");
+      const fh = await fsp.open(watchedFile, "r");
       let chunk;
       try {
         const buf = Buffer.alloc(end - start);
@@ -309,20 +309,48 @@ function startTranscriptWatcher(bot) {
           const needle = pending.text.slice(0, 80);
           if (needle && prompt.includes(needle)) {
             const summary = pending.text.replace(/\s+/g, " ").slice(0, 140);
-            try {
-              await bot.api.sendMessage(pending.chatId, `🎩 Mayor is back, starting on: ${summary}`);
-              console.log(`back-notice sent to ${pending.chatId}`);
-            } catch (err) {
-              console.error("back notice send failed:", err.message);
-            }
+            // Fire-and-forget: don't block subsequent matches on Telegram I/O.
+            bot.api.sendMessage(pending.chatId, `🎩 Mayor is back, starting on: ${summary}`)
+              .then(() => console.log(`back-notice sent to ${pending.chatId}`))
+              .catch(err => console.error("back notice send failed:", err.message));
             pendingBackNotices.delete(key);
           }
         }
       }
     } catch (err) {
-      if (process.env.DEBUG) console.error("transcript watcher tick failed:", err.message);
+      if (process.env.DEBUG) console.error("watcher consume failed:", err.message);
+    } finally {
+      processing = false;
     }
-  }, WATCHER_INTERVAL_MS).unref(); // don't keep the process alive on its own
+  }
+
+  async function rebind() {
+    try {
+      const sid = await readMayorSessionId();
+      if (sid === lastSid && watcher) return;
+      if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+      lastSid = sid;
+      if (!sid) return;
+      const projDir = MAYOR_CWD.replace(/\//g, "-");
+      const file = `${CLAUDE_HOME}/projects/${projDir}/${sid}.jsonl`;
+      const stat = await fsp.stat(file).catch(() => null);
+      if (!stat) return;
+      watchedFile = file;
+      lastSize = stat.size; // start at the tail
+      try {
+        watcher = fs.watch(file, { persistent: false }, (eventType) => {
+          if (eventType === "change") consumeNewBytes();
+        });
+      } catch (err) {
+        console.error("fs.watch failed:", err.message);
+      }
+    } catch (err) {
+      if (process.env.DEBUG) console.error("watcher rebind failed:", err.message);
+    }
+  }
+
+  rebind();
+  setInterval(rebind, REBIND_INTERVAL_MS).unref();
 }
 
 // --- Inbound: Telegram text -> gt mail ---------------------------------
