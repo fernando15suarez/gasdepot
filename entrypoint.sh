@@ -78,9 +78,17 @@ sync_skills_to_host() {
     fi
 
     log "Mirroring install-gastown skill into host ~/.claude/skills/."
-    mkdir -p "${skills_dst}"
-    cp -f "${skills_src}/SKILL.md" "${skills_dst}/SKILL.md"
-    : >"${sentinel}"
+    # The mirror is nice-to-have — typical breakage is a perm-denied on
+    # ~/.claude/skills when the host bind-mount is owned by a different uid
+    # (e.g. compose run under sudo making HOME=/root, then mounting it
+    # back under a non-root user). Log and continue rather than tripping
+    # `set -euo pipefail` and trapping the container in a boot loop.
+    if ! mkdir -p "${skills_dst}" 2>/dev/null \
+        || ! cp -f "${skills_src}/SKILL.md" "${skills_dst}/SKILL.md" 2>/dev/null \
+        || ! : >"${sentinel}" 2>/dev/null; then
+        warn "Could not mirror install-gastown skill to ${skills_dst} (likely perm-denied) — continuing."
+        return 0
+    fi
 }
 
 # `gt install` calls into Dolt to initialize identity metadata, and Dolt
