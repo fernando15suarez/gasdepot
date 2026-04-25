@@ -14,7 +14,12 @@ set -euo pipefail
 
 MODE="${1:-wizard}"
 GASTOWN_HOME="${GASTOWN_HOME:-/gastown}"
-DOLT_PORT="${DOLT_PORT:-3307}"
+DOLT_PORT="${DOLT_PORT:-${GT_DOLT_PORT:-3307}}"
+# Mirror DOLT_PORT to GT_DOLT_PORT so gt-bot (which reads GT_DOLT_PORT)
+# and the rest of the stack stay in lockstep when the operator overrode
+# either name in .env.
+export GT_DOLT_PORT="${DOLT_PORT}"
+export DOLT_PORT
 DOLT_DATA_DIR="${GASTOWN_HOME}/.dolt-data"
 # HQ lives inside /gastown/repos so it survives rebuilds via the
 # `gastown-repos` named volume. /gastown itself is NOT persisted, so
