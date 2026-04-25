@@ -15,6 +15,12 @@ ARG BD_REPO=gastownhall/beads
 ARG GT_VERSION=0.12.0
 ARG CLAUDE_VERSION=2.1.117
 
+# Local voice transcription. WHISPER_REF pins whisper.cpp; the binary and
+# WHISPER_MODEL are baked into the runtime layer so cloners get voice
+# support out of the box without any additional setup.
+ARG WHISPER_REF=v1.7.5
+ARG WHISPER_MODEL=ggml-tiny.en.bin
+
 # GID for the in-container `docker` group. Must match the GID that owns
 # /var/run/docker.sock on the host or `docker` calls inside the container
 # will hit EACCES. 988 is the default Debian/Ubuntu assignment for the
@@ -50,6 +56,31 @@ RUN git clone --depth 1 --branch "${CROW_REF}" "${CROW_REPO}" crow \
     && rm -rf crow/.git
 
 # -----------------------------------------------------------------------------
+# Stage 1b — build whisper.cpp and download a voice model. Build artefacts
+# are copied into the runtime stage; the toolchain itself stays out of it.
+# -----------------------------------------------------------------------------
+FROM debian:${DEBIAN_VERSION}-slim AS whisper-builder
+ARG WHISPER_REF
+ARG WHISPER_MODEL
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        cmake \
+        curl \
+        g++ \
+        git \
+        make \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 --branch "${WHISPER_REF}" https://github.com/ggerganov/whisper.cpp /build/whisper.cpp \
+    && cd /build/whisper.cpp \
+    && cmake -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build -j --config Release --target whisper-cli \
+    && bash ./models/download-ggml-model.sh "$(echo "${WHISPER_MODEL}" | sed -E 's/^ggml-(.+)\.bin$/\1/')"
+
+# -----------------------------------------------------------------------------
 # Stage 2 — runtime image. Node + Python + the Gas Town toolchain.
 # -----------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS runtime
@@ -75,6 +106,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        ffmpeg \
         git \
         gnupg \
         jq \
@@ -132,6 +164,18 @@ RUN set -eux; \
 # out of image rebuilds.
 RUN npm install -g "@gastown/gt@${GT_VERSION}" \
     && gt --version
+
+# --- whisper.cpp (local voice transcription) ------------------------------
+# Binary + model copied from the builder stage; ffmpeg comes from apt above.
+# WHISPER_MODEL is the filename only — the path is fixed at /opt/whisper/.
+ARG WHISPER_MODEL
+COPY --from=whisper-builder /build/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=whisper-builder /build/whisper.cpp/models/${WHISPER_MODEL} /opt/whisper/models/${WHISPER_MODEL}
+# Whisper.cpp ships its libs alongside the binary; copy them into a path
+# the dynamic linker already searches so we don't have to set LD_LIBRARY_PATH.
+COPY --from=whisper-builder /build/whisper.cpp/build/src/libwhisper.so* /usr/local/lib/
+COPY --from=whisper-builder /build/whisper.cpp/build/ggml/src/libggml*.so* /usr/local/lib/
+RUN ldconfig && whisper-cli --help >/dev/null 2>&1 && echo "whisper-cli installed"
 
 # --- docker CLI ------------------------------------------------------------
 # Just the client + compose plugin; no daemon. The container talks to the

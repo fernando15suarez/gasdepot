@@ -6,6 +6,8 @@
 //           plus `gt nudge mayor ...` for immediate delivery.
 //           Attachments (photo/document/voice/audio/video) download to
 //           GT_BOT_INBOX_DIR; the path is mailed + nudged to mayor.
+//           Voice messages are also transcribed locally via whisper.cpp
+//           and the transcript is mailed to mayor as the message body.
 // Outbound: HTTP POST /send      { message, chat? } -> Telegram text
 //           HTTP POST /send-file { path, chat?, caption?, kind? } -> upload
 //
@@ -36,6 +38,20 @@ const CLAUDE_HOME = process.env.CLAUDE_HOME
 // so operators can point it elsewhere (volume mount, tmpfs, etc.).
 const INBOX_DIR = process.env.GT_BOT_INBOX_DIR
   || `${process.env.GT_TOWN_ROOT || "/gastown/repos/hq"}/mayor/inbox`;
+
+// Voice transcription tooling. Both binaries ship with the Docker image
+// (ffmpeg via apt, whisper-cli built from source in a separate stage; the
+// model is baked in at /opt/whisper/models/). Read at call time so env
+// overrides take effect without a process restart, and so tests can swap
+// the binary path between cases.
+function whisperConfig() {
+  return {
+    ffmpeg: process.env.FFMPEG_BIN || "ffmpeg",
+    whisper: process.env.WHISPER_BIN || "whisper-cli",
+    model: process.env.WHISPER_MODEL || "/opt/whisper/models/ggml-tiny.en.bin",
+    lang: process.env.WHISPER_LANG || "en",
+  };
+}
 
 // --- Permissions cache -------------------------------------------------
 
@@ -477,6 +493,41 @@ async function downloadTelegramFile(token, filePath, destPath) {
   await fsp.writeFile(destPath, buf);
 }
 
+// Convert Telegram's ogg/opus voice file to whisper.cpp's expected format
+// (16kHz mono PCM WAV) and run whisper-cli. Returns the trimmed transcript
+// or null on any failure — the caller falls back to path-only delivery so
+// a transcription failure never loses the message.
+async function transcribeVoice(oggPath) {
+  const wavPath = `${oggPath}.wav`;
+  const cfg = whisperConfig();
+  try {
+    await execFileAsync(cfg.ffmpeg, [
+      "-y",                // overwrite output silently
+      "-loglevel", "error",
+      "-i", oggPath,
+      "-ar", "16000",      // 16 kHz
+      "-ac", "1",          // mono
+      "-f", "wav",
+      wavPath,
+    ], { timeout: 30000 });
+
+    const { stdout } = await execFileAsync(cfg.whisper, [
+      "-m", cfg.model,
+      "-f", wavPath,
+      "-l", cfg.lang,
+      "-nt",               // no timestamps
+      "-np",               // no progress
+    ], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+
+    return stdout.trim() || null;
+  } catch (err) {
+    console.error("transcribe failed:", err.message);
+    return null;
+  } finally {
+    try { await fsp.unlink(wavPath); } catch { /* best-effort */ }
+  }
+}
+
 async function handleTelegramMedia(ctx) {
   const chatId = String(ctx.chat.id);
   if (!isAuthorized(chatId)) {
@@ -504,23 +555,48 @@ async function handleTelegramMedia(ctx) {
     return;
   }
 
+  // Voice gets transcribed in-process so mayor receives readable text, not
+  // just a path. On transcription failure we fall back to the path-only
+  // delivery — the message is never lost.
+  let transcript = null;
+  if (info.kind === "voice") {
+    transcript = await transcribeVoice(destPath);
+    if (transcript) {
+      try { await ctx.reply(`📝 Heard: ${transcript}`); } catch {}
+    }
+  }
+
   const rigs = allowedRigs(chatId);
   const rigScope = rigs.includes("*") ? null : rigs;
   const rigTag = rigScope ? ` [rigs:${rigScope.join(",")}]` : "";
-  const subject = `Telegram ${info.kind} from ${from}${rigTag}: ${safeFilename(info.name)}`.slice(0, 140);
-  const captionLine = info.caption ? `\nCaption: ${info.caption}` : "";
-  const body = [
-    rigScope ? `[Chat ${chatId} — access: ${rigScope.join(", ")}]` : `[Chat ${chatId}]`,
-    `[From: ${from}]`,
-    "",
-    `File received and saved to disk.`,
-    `  Path:  ${destPath}`,
-    `  Kind:  ${info.kind}`,
-    `  Name:  ${info.name || "(none)"}`,
-    `  Size:  ${info.size ?? "?"} bytes`,
-    `  MIME:  ${info.mime || "?"}`,
-    captionLine,
-  ].filter(Boolean).join("\n");
+
+  let subject, body;
+  if (transcript) {
+    subject = `Telegram voice from ${from}${rigTag}: ${transcript.slice(0, 80)}`.slice(0, 140);
+    body = [
+      rigScope ? `[Chat ${chatId} — access: ${rigScope.join(", ")}]` : `[Chat ${chatId}]`,
+      `[From: ${from}]`,
+      `[Transcribed locally via whisper.cpp · audio at ${destPath}]`,
+      "",
+      transcript,
+    ].filter(Boolean).join("\n");
+  } else {
+    const captionLine = info.caption ? `\nCaption: ${info.caption}` : "";
+    subject = `Telegram ${info.kind} from ${from}${rigTag}: ${safeFilename(info.name)}`.slice(0, 140);
+    body = [
+      rigScope ? `[Chat ${chatId} — access: ${rigScope.join(", ")}]` : `[Chat ${chatId}]`,
+      `[From: ${from}]`,
+      info.kind === "voice" ? "[Transcription failed — audio only]" : "",
+      "",
+      `File received and saved to disk.`,
+      `  Path:  ${destPath}`,
+      `  Kind:  ${info.kind}`,
+      `  Name:  ${info.name || "(none)"}`,
+      `  Size:  ${info.size ?? "?"} bytes`,
+      `  MIME:  ${info.mime || "?"}`,
+      captionLine,
+    ].filter(Boolean).join("\n");
+  }
 
   try {
     await gtMailSend("mayor/", subject, body);
@@ -531,13 +607,17 @@ async function handleTelegramMedia(ctx) {
   }
 
   try {
-    const nudgeText = `[Telegram ${info.kind} from ${from}]: ${destPath}${info.caption ? ` — ${info.caption}` : ""}`;
+    const nudgePreview = transcript
+      ? transcript.slice(0, 200)
+      : `${destPath}${info.caption ? ` — ${info.caption}` : ""}`;
+    const replyHint = `\n\nReply via: curl -s -X POST http://localhost:${config.port()}/send -H 'Content-Type: application/json' -d '{"message":"your reply","chat":"${chatId}"}'`;
+    const nudgeText = `[Telegram ${info.kind} from ${from}]: ${nudgePreview}${replyHint}`;
     await gtNudge("mayor", nudgeText);
   } catch (err) {
     console.error("gt nudge (file) failed (non-fatal):", err.message);
   }
 
-  console.log(`forwarded ${info.kind} to mayor: ${destPath}`);
+  console.log(`forwarded ${info.kind} to mayor: ${transcript ? "(transcribed) " : ""}${destPath}`);
 }
 
 // --- Outbound: HTTP /send ----------------------------------------------
@@ -805,6 +885,8 @@ module.exports = {
     guessKindFromExt,
     handleTelegramMedia,
     handleSendFile,
+    // Voice
+    transcribeVoice,
     // Common
     handleTelegramText,
     handleSend,

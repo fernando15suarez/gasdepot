@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake `whisper-cli` used by the voice tests. Echoes a known transcript
+# (overridable via $WHISPER_FAKE_OUTPUT) so handlers can assert it ended
+# up in the mail body.
+set -euo pipefail
+echo "${WHISPER_FAKE_OUTPUT:-this is a fake transcription}"
+exit 0

@@ -58,11 +58,11 @@ function installFakeFetch() {
 
 function makeReq(body) {
   const chunks = Array.isArray(body) ? body : [body];
-  let idx = 0;
   const handlers = {};
   return {
     on(event, cb) { handlers[event] = cb; return this; },
-    // Kick off "streaming" synchronously-ish: tests call emit() to simulate
+    // Tests call emit() after passing the req to a handler so the
+    // readBody promise resolves with our bytes.
     emit() {
       for (const c of chunks) handlers.data?.(c);
       handlers.end?.();
@@ -108,14 +108,21 @@ function readGtLog(logPath) {
   if (!fs.existsSync(logPath)) return [];
   const text = fs.readFileSync(logPath, "utf8");
   const entries = [];
+  let inStdin = false;
+  let stdinBuf = [];
   for (const line of text.split("\n")) {
+    if (line === "STDIN_BEGIN") { inStdin = true; stdinBuf = []; continue; }
+    if (line === "STDIN_END") {
+      inStdin = false;
+      let body = stdinBuf.join("\n");
+      if (body.endsWith("\n")) body = body.slice(0, -1);
+      entries.push({ kind: "stdin", body });
+      continue;
+    }
+    if (inStdin) { stdinBuf.push(line); continue; }
     if (!line) continue;
     const [tag, ...rest] = line.split("\t");
-    if (tag === "ARGV") {
-      entries.push({ kind: "argv", args: rest.filter(Boolean) });
-    } else if (tag === "STDIN") {
-      entries.push({ kind: "stdin", body: rest.join("\t") });
-    }
+    if (tag === "ARGV") entries.push({ kind: "argv", args: rest.filter(Boolean) });
   }
   return entries;
 }

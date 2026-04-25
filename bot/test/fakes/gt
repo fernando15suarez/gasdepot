@@ -2,6 +2,9 @@
 # Fake `gt` used by the bot's tests. Records every invocation (argv +
 # stdin if passed) to $GT_FAKE_LOG, then exits 0. Never touches Dolt, mail,
 # or any real Gas Town state.
+#
+# Stdin bodies can be multi-line (mail bodies usually are), so we wrap
+# them in STDIN_BEGIN / STDIN_END markers and the helper reassembles.
 set -euo pipefail
 
 LOG="${GT_FAKE_LOG:-/dev/null}"
@@ -14,11 +17,13 @@ LOG="${GT_FAKE_LOG:-/dev/null}"
 # --help calls used for gtAvailable() probing don't get stdin. Skip.
 for a in "$@"; do
   if [[ "$a" == "--stdin" ]]; then
-    printf 'STDIN\t'
-    cat
-    printf '\n'
+    {
+      printf 'STDIN_BEGIN\n'
+      cat
+      printf '\nSTDIN_END\n'
+    } >>"$LOG"
     break
   fi
-done >>"$LOG"
+done
 
 exit 0
