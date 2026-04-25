@@ -607,7 +607,8 @@ async function handleTelegramMedia(ctx) {
     const nudgePreview = transcript
       ? transcript.slice(0, 200)
       : `${destPath}${info.caption ? ` — ${info.caption}` : ""}`;
-    const nudgeText = `[Telegram ${info.kind} from ${from}]: ${nudgePreview}`;
+    const replyHint = `\n\nReply via: curl -s -X POST http://localhost:${config.port()}/send -H 'Content-Type: application/json' -d '{"message":"your reply","chat":"${chatId}"}'`;
+    const nudgeText = `[Telegram ${info.kind} from ${from}]: ${nudgePreview}${replyHint}`;
     await gtNudge("mayor", nudgeText);
   } catch (err) {
     console.error("gt nudge (file) failed (non-fatal):", err.message);
