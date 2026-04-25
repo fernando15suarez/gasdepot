@@ -51,6 +51,7 @@ After onboarding completes:
 - **Dolt server** — the data plane for beads (issues, mail, identity, work history).
 - **Beads DB** — Mayor's queue for the work you hand it.
 - **A running container** named `gastown` with the toolchain pinned to known-good versions.
+- **Optional dev/staging container** — `docker-compose.dev.yml` boots a parallel `gastown-dev` container with its own Dolt, repos, logs, and Telegram bot, so you can iterate on the starter kit without putting prod's bridge at risk. See [`docs/dev-environment.md`](docs/dev-environment.md).
 
 Your first move after install is to DM gt-bot on Telegram and ask Mayor to spawn your first rig. No example rig is pre-scaffolded — you create the work you care about.
 
@@ -73,7 +74,8 @@ Your Dolt data, Claude config, `.env`, and user repos live on named volumes and 
 | `Dockerfile` | Image definition — pinned `node`, `python`, `git`, `bd`, `dolt`, `claude`, `gt` |
 | `entrypoint.sh` | Detects first-run vs. rebuilds; hands off to the wizard or to a running shell |
 | `docker-compose.yml` | Single-service compose — defines volumes, env wiring, ports |
-| `.env.example` | Template for Telegram tokens (`GT_BOT_TOKEN` required; TeleTalk/Crow optional) and Anthropic key (copy to `.env`) |
+| `docker-compose.dev.yml` | Optional second compose — boots a parallel `gastown-dev` container for iteration (see [`docs/dev-environment.md`](docs/dev-environment.md)) |
+| `.env.example` | Template for Telegram tokens (`GT_BOT_TOKEN` required; `GT_BOT_TOKEN_DEV` for the dev container; TeleTalk/Crow optional) and Anthropic key (copy to `.env`) |
 | `bot/` | gt-bot — bundled Telegram bridge (auto-started by `entrypoint.sh`) |
 | `wizard/` | CLI primitives — idempotent scripts the skill orchestrates |
 | `.claude/skills/install-gastown/` | The conversational onboarding skill |
