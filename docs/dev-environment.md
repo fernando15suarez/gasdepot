@@ -36,6 +36,11 @@ The two containers share `~/.claude` (your Claude auth) and `OPERATOR_TELEGRAM_C
 
 ## Daily flow: iterate on dev, merge to prod
 
+The prod container has its own docker CLI and host socket access (see
+[docker-access.md](docker-access.md)), so Mayor can drive the rebuild loop
+itself once you ask it to. The commands below are the manual equivalents
+you'd otherwise run by hand.
+
 ```bash
 # Start (or rebuild) dev. Prod keeps running untouched.
 docker compose -f docker-compose.dev.yml up -d --build
