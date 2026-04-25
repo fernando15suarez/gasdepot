@@ -4,7 +4,19 @@ A Dockerized onboarding rig for [Gas Town](https://github.com/gastownhall/gastow
 
 > **Status:** v0 MVP. Linux-only. Single-container topology. See [`docs/troubleshooting.md`](docs/troubleshooting.md) for known rough edges.
 
-## Three-step quickstart
+## Quickstart (no Claude)
+
+If you don't have Claude Code yet (or just want the fastest path), run the installer script:
+
+```bash
+git clone https://github.com/fernando15suarez/gasdepot
+cd gasdepot
+./install.sh
+```
+
+`install.sh` checks for Docker, builds the image, brings up the stack, and drops you into `gt-wizard` for Telegram + Claude token entry. Re-running it is safe — the wizard is idempotent. You'll still need a Claude auth (subscription or API key) and at least one Telegram bot token; the wizard explains how to get them.
+
+## Three-step quickstart (with Claude Code)
 
 1. **Install the prerequisites** on your host (see below).
 2. **Clone this repo** and `cd` into it.
