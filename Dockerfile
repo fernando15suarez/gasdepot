@@ -27,7 +27,17 @@ ARG WHISPER_MODEL=ggml-tiny.en.bin
 # docker package; pass `--build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)`
 # at build time if your host differs. The entrypoint logs a warning at
 # boot if the live socket GID doesn't match the group GID baked in here.
+#
+# Only consulted when the docker-host overlay (docker-compose.docker-host.yml)
+# is in play — the default compose file does not bind the socket, so the
+# `docker` group is harmless to keep around and avoids per-image divergence.
 ARG DOCKER_GID=988
+
+# Set to "1" by docker-compose.voice.yml to bake whisper-cli (whisper.cpp)
+# and ffmpeg into the runtime. Default off — adds ~50 MB to the image and
+# only the voice-bot path needs it. The whisper model itself is NOT baked
+# in; it lazy-downloads on first use (paired with whisper-lazy-download).
+ARG INSTALL_VOICE=0
 
 # Upstream repos vendored at build time (not git submodules).
 ARG TELETALK_REPO=https://github.com/fernando15suarez/teletalk.git
@@ -92,6 +102,7 @@ ARG GT_VERSION
 ARG CLAUDE_VERSION
 ARG PYTHON_VERSION
 ARG DOCKER_GID
+ARG INSTALL_VOICE
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -178,12 +189,12 @@ COPY --from=whisper-builder /build/whisper.cpp/build/ggml/src/libggml*.so* /usr/
 RUN ldconfig && whisper-cli --help >/dev/null 2>&1 && echo "whisper-cli installed"
 
 # --- docker CLI ------------------------------------------------------------
-# Just the client + compose plugin; no daemon. The container talks to the
-# host's docker daemon over the bind-mounted /var/run/docker.sock (see
-# docker-compose.yml). This grants effective root-on-host to anyone in the
-# container, justified by branch protection on main + PR-only flow + the
-# operator already trusting the container with full GitHub PAT access.
-# See docs/docker-access.md for the full trust analysis.
+# Just the client + compose plugin; no daemon. Harmless when the default
+# compose file is in use (no socket mount → the CLI has nothing to talk to).
+# When the docker-compose.docker-host.yml overlay is active, the CLI talks
+# to the host daemon over the bind-mounted /var/run/docker.sock and grants
+# effective root-on-host to anyone in the container.
+# See docs/docker-access.md for the full trust analysis and how to opt in.
 RUN set -eux; \
     install -m 0755 -d /etc/apt/keyrings; \
     curl -fsSL https://download.docker.com/linux/debian/gpg \
@@ -197,6 +208,30 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     docker --version; \
     docker compose version
+
+# --- voice (whisper-cli + ffmpeg) — opt-in via docker-compose.voice.yml ---
+# Gated on INSTALL_VOICE so the default image stays slim. When the voice
+# overlay sets INSTALL_VOICE=1, this stage installs ffmpeg from apt and
+# builds whisper.cpp from source to get the `whisper-cli` binary on PATH.
+# Whisper.cpp is not packaged for Debian, so the build-from-source path is
+# the cleanest option; build deps are removed in the same RUN to keep the
+# delta to a single squash-friendly layer.
+RUN if [ "${INSTALL_VOICE}" = "1" ]; then \
+        set -eux; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends ffmpeg; \
+        apt-get install -y --no-install-recommends build-essential cmake git; \
+        git clone --depth 1 --branch v1.7.6 https://github.com/ggerganov/whisper.cpp /tmp/whisper.cpp; \
+        cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF; \
+        cmake --build /tmp/whisper.cpp/build -j --config Release --target whisper-cli; \
+        install -m 0755 /tmp/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli; \
+        rm -rf /tmp/whisper.cpp; \
+        apt-get purge -y --auto-remove build-essential cmake; \
+        rm -rf /var/lib/apt/lists/*; \
+        whisper-cli --help >/dev/null && ffmpeg -version >/dev/null; \
+    else \
+        echo "INSTALL_VOICE=0 — skipping whisper-cli + ffmpeg install."; \
+    fi
 
 # --- non-root user ---------------------------------------------------------
 # All runtime work happens as `gastown` (uid 1000). Matches typical host uid

@@ -1,0 +1,41 @@
+# Gas Town Starter Kit — docker-host overlay (opt-in).
+#
+# Activates host-docker access for the gastown container. With this overlay
+# applied, anything inside the container can drive the operator's host
+# docker daemon — build images, start containers, run `docker compose`.
+# The intended use case is letting Mayor (and polecats spawned by Mayor)
+# spin up downstream container projects from inside Gas Town without
+# paste-and-run from the operator.
+#
+# ⚠️  TRUST EXPANSION ⚠️
+# Mounting /var/run/docker.sock grants effective root-on-host equivalence
+# to anything inside the container. Read docs/docker-access.md for the full
+# trust analysis BEFORE opting in. The starter kit's default posture
+# deliberately omits this for fresh clones.
+#
+# Activate (one-shot):
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up -d --build
+#
+# Or persist via .env (the wizard does this for you):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml
+#
+# Stack with docker-compose.voice.yml if you also want voice transcription:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml:docker-compose.voice.yml
+#
+# DOCKER_GID:
+#   The in-container `docker` group's GID must match the GID that owns
+#   /var/run/docker.sock on the host, or `docker` calls inside the container
+#   hit EACCES. Default is 988 (Debian/Ubuntu). To override per-host:
+#     echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+#   The entrypoint also logs a warning at boot if the live socket GID
+#   doesn't match the group GID baked in.
+
+services:
+  gastown:
+    build:
+      args:
+        DOCKER_GID: ${DOCKER_GID:-988}
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock

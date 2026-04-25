@@ -8,6 +8,14 @@
 #     intentionally NO shared state between gastown and gastown-dev —
 #     mutating dev cannot corrupt prod's Dolt or repos.
 #
+# Trust posture matches the lightweight default of docker-compose.yml:
+#   - No /var/run/docker.sock bind. If you want the dev container to drive
+#     docker (e.g. to spin up the starter kit's own dev container from
+#     inside dev), stack the docker-host overlay:
+#       docker compose -f docker-compose.dev.yml -f docker-compose.docker-host.yml up -d --build
+#   - No voice deps baked in. Stack docker-compose.voice.yml the same way.
+#   See README + docs/docker-access.md for the trust analysis.
+#
 # Port offsets vs prod (so both can run side-by-side on one host):
 #   - Dolt host port:    3309   (prod 3307)
 #   - gt-bot HTTP port:  3336   (prod 3335)
@@ -68,13 +76,6 @@ services:
       - type: bind
         source: ./.env
         target: /gastown/.env
-
-      # Same docker socket mount as prod. Both containers share host-daemon
-      # access; neither can affect the other's named volumes via this path.
-      # See docs/docker-access.md.
-      - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
 
     stdin_open: true
     tty: true

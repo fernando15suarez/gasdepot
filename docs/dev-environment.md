@@ -36,10 +36,23 @@ The two containers share `~/.claude` (your Claude auth) and `OPERATOR_TELEGRAM_C
 
 ## Daily flow: iterate on dev, merge to prod
 
-The prod container has its own docker CLI and host socket access (see
-[docker-access.md](docker-access.md)), so Mayor can drive the rebuild loop
-itself once you ask it to. The commands below are the manual equivalents
-you'd otherwise run by hand.
+The commands below are the manual equivalents you can run by hand. If
+you've opted into the docker-host overlay (see
+[docker-access.md](docker-access.md)) on prod, Mayor can drive this rebuild
+loop itself once you ask it to. The default install ships without that
+socket bind, so Mayor will hand back paste-and-run instructions until you
+opt in.
+
+To stack the docker-host or voice overlay on top of dev too:
+
+```bash
+docker compose -f docker-compose.dev.yml -f docker-compose.docker-host.yml up -d --build
+docker compose -f docker-compose.dev.yml -f docker-compose.voice.yml up -d --build
+```
+
+Note that explicit `-f` flags override `COMPOSE_FILE` in `.env`. If you've
+persisted overlays in `.env` for prod, you'll need to re-list them with
+`-f` here when scoping to dev.
 
 ```bash
 # Start (or rebuild) dev. Prod keeps running untouched.

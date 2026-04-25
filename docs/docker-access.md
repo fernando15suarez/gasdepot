@@ -1,6 +1,8 @@
 # Docker access from inside the container
 
-The `gastown` container ships with a docker CLI and a bind mount of the host's `/var/run/docker.sock`. This lets Mayor (and anything else running inside the container) drive the host docker daemon directly: build images, start containers, run `docker compose`. The intended use case is letting Mayor spin up a dev container for PR testing without paste-and-run from the operator.
+The `gastown` container ships with the docker CLI in the image but **does not** bind the host docker socket by default. Activating the `docker-compose.docker-host.yml` overlay binds `/var/run/docker.sock` from the host so Mayor (and anything else running inside the container) can drive the host docker daemon directly: build images, start containers, run `docker compose`. The intended use case is letting Mayor — or polecats spawned by Mayor — spin up downstream container projects from inside Gas Town without paste-and-run from the operator.
+
+The default install deliberately omits this bind so a fresh clone gives you the tightest trust posture. Read the rest of this page before opting in.
 
 ## What this grants
 
@@ -31,24 +33,41 @@ If you intend to host this for multiple users, multi-tenant agents, or untrusted
 
 ## How it's wired
 
-- `Dockerfile` installs `docker-ce-cli` and `docker-compose-plugin` from the official Docker apt repo, creates a `docker` group with a stable build-time GID (`DOCKER_GID`, default `988`), and adds the `gastown` user to it.
-- `docker-compose.yml` and `docker-compose.dev.yml` bind-mount `/var/run/docker.sock` from the host into the container at the same path.
-- `entrypoint.sh` calls `check_docker_access` at boot. It logs a confirmation when the daemon is reachable, or a warning with rebuild instructions when the in-container `docker` group GID doesn't match the host socket's GID.
+- `Dockerfile` installs `docker-ce-cli` and `docker-compose-plugin` from the official Docker apt repo, creates a `docker` group with a stable build-time GID (`DOCKER_GID`, default `988`), and adds the `gastown` user to it. These layers run unconditionally — the CLI is harmless without a socket to talk to, and keeping the user-group setup uniform avoids per-image divergence.
+- `docker-compose.docker-host.yml` is the **opt-in overlay** that bind-mounts `/var/run/docker.sock` from the host into the container at the same path and pipes `DOCKER_GID` from `.env` into the build. The default `docker-compose.yml` and `docker-compose.dev.yml` do NOT mount the socket.
+- `entrypoint.sh` calls `check_docker_access` at boot. With the overlay applied, it logs a confirmation when the daemon is reachable, or a warning with rebuild instructions when the in-container `docker` group GID doesn't match the host socket's GID. Without the overlay, it logs `docker socket not mounted — skipping daemon access check.` and moves on.
 
 ### GID mismatch
 
-The host's docker group GID is whatever the host's package manager assigned (`988` on most current Debian/Ubuntu, but it can be `999` or anything else). If your host differs from the build-time default, the entrypoint warning will print the exact rebuild command:
+The host's docker group GID is whatever the host's package manager assigned (`988` on most current Debian/Ubuntu, but it can be `999` or anything else). If your host differs from the build-time default, the entrypoint warning will print the exact rebuild command. The cleanest fix is to capture the GID once in `.env` so all future builds use it:
 
 ```bash
-docker compose build --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
-docker compose up -d
+echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+docker compose up -d --build
 ```
 
-This rebuilds with the correct GID baked in. Subsequent `docker compose` commands inside the container then work without `sudo`.
+The overlay reads `DOCKER_GID` from `.env` (falling back to `988`) and passes it as a build arg. Subsequent `docker compose` commands inside the container then work without `sudo`.
+
+## How to enable
+
+Pick one of:
+
+**One-shot:** layer the overlay onto the default compose file.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up -d --build
+```
+
+**Persist:** capture the chosen overlays in `.env` so plain `docker compose` invocations honor them. The wizard does this for you when you answer yes to the "docker access" prompt during `gt-wizard init`.
+
+```bash
+echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml' >> .env
+docker compose up -d --build
+```
 
 ## Verification
 
-After `docker compose up -d --build`, exec into the container and confirm:
+After bringing the stack up with the overlay, exec into the container and confirm:
 
 ```bash
 docker compose exec gastown bash -lc 'docker compose ps'
@@ -66,16 +85,12 @@ docker compose -f docker-compose.dev.yml exec gastown-dev bash -lc 'docker compo
 
 ## How to disable
 
-If you don't want the container talking to the host daemon, remove the socket bind mount from both compose files:
+The default install never enables this in the first place. If you previously opted in and want to drop back to the lightweight default:
 
-```yaml
-# Delete this block from docker-compose.yml AND docker-compose.dev.yml:
-- type: bind
-  source: /var/run/docker.sock
-  target: /var/run/docker.sock
-```
+1. Remove the docker-host overlay from `COMPOSE_FILE` in `.env`. Either delete the line, blank it out, or rewrite it to just `docker-compose.yml` (plus any other overlays you keep).
+2. `docker compose down && docker compose up -d --force-recreate`
 
-Then `docker compose up -d --force-recreate`. Mayor falls back to handing the operator paste-able docker commands instead of running them itself. The CLI binary stays in the image (harmless without a socket to talk to), or you can also drop the `docker-ce-cli` install from the Dockerfile if image size matters.
+Mayor will fall back to handing the operator paste-able docker commands instead of running them itself. The CLI binary stays in the image — it's harmless without a socket to talk to, and keeping it avoids a rebuild if you later opt back in.
 
 ## Polecat inheritance
 

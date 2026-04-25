@@ -4,6 +4,8 @@ A Dockerized onboarding rig for [Gas Town](https://github.com/gastownhall/gastow
 
 > **Status:** v0 MVP. Linux-only. Single-container topology. See [`docs/troubleshooting.md`](docs/troubleshooting.md) for known rough edges.
 
+The default install is intentionally minimal — gt-bot + Mayor, nothing else. Heavier features (voice transcription, host-docker access for downstream container projects) are opt-in via [compose overlays](#compose-overlays) so a fresh clone gives you a small image and a tight trust posture.
+
 ## Quickstart (no Claude)
 
 If you don't have Claude Code yet (or just want the fastest path), run the installer script:
@@ -55,6 +57,32 @@ After onboarding completes:
 
 Your first move after install is to DM gt-bot on Telegram and ask Mayor to spawn your first rig. No example rig is pre-scaffolded — you create the work you care about.
 
+## Compose overlays
+
+A fresh `docker compose up -d` runs the lightweight default: gt-bot Telegram bridge + Mayor, no host docker socket, no voice deps. Two overlay files unlock heavier features when you need them:
+
+| Overlay | Adds | Trust note |
+| --- | --- | --- |
+| `docker-compose.docker-host.yml` | `/var/run/docker.sock` bind + `DOCKER_GID` build arg | Effective root-on-host. Only enable if you've read [`docs/docker-access.md`](docs/docker-access.md) and accept the trade-off. |
+| `docker-compose.voice.yml` | `INSTALL_VOICE=1` build arg → ffmpeg + whisper-cli baked into the runtime image | Adds ~50 MB to the image; the transcription model itself lazy-downloads on first use, not at build time. |
+
+Pick one of two ways to apply them:
+
+**1. One-shot with `-f` flags** (no .env edits):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.docker-host.yml -f docker-compose.voice.yml up -d --build
+```
+
+**2. Persist via `COMPOSE_FILE` in `.env`** (the wizard does this when you answer yes to its overlay prompts):
+
+```bash
+echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml:docker-compose.voice.yml' >> .env
+docker compose up -d --build
+```
+
+After that, every `docker compose ...` invocation (no `-f` needed) picks up the overlays automatically. To go back to the lightweight default, blank out `COMPOSE_FILE` in `.env` and `docker compose up -d --build`.
+
 ## Updating
 
 Fernando ships new tools and wizard improvements on the `main` branch. To pull them into your running setup:
@@ -73,7 +101,9 @@ Your Dolt data, Claude config, `.env`, and user repos live on named volumes and 
 | --- | --- |
 | `Dockerfile` | Image definition — pinned `node`, `python`, `git`, `bd`, `dolt`, `claude`, `gt` |
 | `entrypoint.sh` | Detects first-run vs. rebuilds; hands off to the wizard or to a running shell |
-| `docker-compose.yml` | Single-service compose — defines volumes, env wiring, ports |
+| `docker-compose.yml` | Lightweight default — gt-bot + Mayor only, no docker socket bind, no voice deps |
+| `docker-compose.docker-host.yml` | Opt-in overlay — adds `/var/run/docker.sock` bind so the container can drive the host docker daemon (see [`docs/docker-access.md`](docs/docker-access.md)) |
+| `docker-compose.voice.yml` | Opt-in overlay — bakes whisper-cli + ffmpeg into the runtime so the bot can transcribe Telegram voice notes |
 | `docker-compose.dev.yml` | Optional second compose — boots a parallel `gastown-dev` container for iteration (see [`docs/dev-environment.md`](docs/dev-environment.md)) |
 | `.env.example` | Template for Telegram tokens (`GT_BOT_TOKEN` required; `GT_BOT_TOKEN_DEV` for the dev container; TeleTalk/Crow optional) and Anthropic key (copy to `.env`) |
 | `bot/` | gt-bot — bundled Telegram bridge (auto-started by `entrypoint.sh`) |

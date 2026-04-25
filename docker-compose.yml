@@ -1,4 +1,22 @@
-# Gas Town Starter Kit — single-service compose.
+# Gas Town Starter Kit — single-service compose (lightweight default).
+#
+# This file is the "fresh clone" baseline. By default, Gas Town runs as a
+# self-contained agent with the Telegram bridge (gt-bot). It does NOT bind
+# the host docker socket and does NOT bake voice-transcription deps into
+# the image — those are opt-in via the overlay files below.
+#
+# Overlays (stack as needed):
+#   docker-compose.docker-host.yml — adds /var/run/docker.sock bind so the
+#     container can drive the host docker daemon (e.g. for downstream user
+#     container projects). See docs/docker-access.md for the trust analysis.
+#   docker-compose.voice.yml — bakes ffmpeg + whisper-cli into the runtime
+#     image so the bot can transcribe Telegram voice notes.
+#
+# Activate at runtime:
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up -d --build
+#
+# Or persist via .env (see gt-wizard init):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml:docker-compose.voice.yml
 #
 # Why single-service:
 #   - Starter kit audience is "friends new to AI tooling". One process to reason
@@ -61,15 +79,6 @@ services:
       - type: bind
         source: ./.env
         target: /gastown/.env
-
-      # Host docker socket — lets Mayor drive `docker compose` against the
-      # operator's host daemon (e.g. spin up a dev container for PR testing
-      # without paste-and-run from the operator). This grants effective
-      # root-on-host inside the container; see docs/docker-access.md for the
-      # full trust analysis and how to disable.
-      - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
 
     # Keep the wizard interactive when users `docker compose run` or
     # `docker compose exec`. The default `up -d` path uses the `daemon` entry

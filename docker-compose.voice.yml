@@ -1,0 +1,26 @@
+# Gas Town Starter Kit — voice overlay (opt-in).
+#
+# Bakes ffmpeg + whisper-cli (whisper.cpp's main binary) into the runtime
+# image so the bot can transcribe Telegram voice notes. Activating this
+# overlay forces a rebuild — the conditional install in Dockerfile is gated
+# on the INSTALL_VOICE build arg.
+#
+# The transcription model itself is NOT baked in. It lazy-downloads on
+# first use (paired with the whisper-lazy-download work — see bd issue
+# tracker for the latest). This keeps the default voice image around
+# tens of MB rather than gigabytes.
+#
+# Activate (one-shot):
+#   docker compose -f docker-compose.yml -f docker-compose.voice.yml up -d --build
+#
+# Or persist via .env (the wizard does this for you):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.voice.yml
+#
+# Stack with docker-compose.docker-host.yml if you also want docker access:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml:docker-compose.voice.yml
+
+services:
+  gastown:
+    build:
+      args:
+        INSTALL_VOICE: "1"
