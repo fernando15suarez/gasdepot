@@ -870,7 +870,7 @@ module.exports = {
   // Not a stable API — exposed so tests can drive handlers and inspect
   // module-scoped state without spinning up a real bot or Dolt.
   __test: {
-    // Busy/back-notice
+    // Busy/back-notice helpers
     summarizeMayorBusy,
     extractPromptText,
     detectMayorBusy,
@@ -879,7 +879,7 @@ module.exports = {
     startTranscriptWatcher,
     flushBackNoticesForChat,
     pendingBackNotices,
-    // File handling
+    // File-handling helpers
     extractMedia,
     safeFilename,
     guessKindFromExt,

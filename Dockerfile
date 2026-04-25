@@ -10,7 +10,7 @@ ARG PYTHON_VERSION=3.12
 ARG DEBIAN_VERSION=bookworm
 
 ARG DOLT_VERSION=1.86.1
-ARG BD_VERSION=1.0.2
+ARG BD_VERSION=1.0.3
 ARG BD_REPO=gastownhall/beads
 ARG GT_VERSION=0.12.0
 ARG CLAUDE_VERSION=2.1.117
@@ -20,6 +20,14 @@ ARG CLAUDE_VERSION=2.1.117
 # support out of the box without any additional setup.
 ARG WHISPER_REF=v1.7.5
 ARG WHISPER_MODEL=ggml-tiny.en.bin
+
+# GID for the in-container `docker` group. Must match the GID that owns
+# /var/run/docker.sock on the host or `docker` calls inside the container
+# will hit EACCES. 988 is the default Debian/Ubuntu assignment for the
+# docker package; pass `--build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)`
+# at build time if your host differs. The entrypoint logs a warning at
+# boot if the live socket GID doesn't match the group GID baked in here.
+ARG DOCKER_GID=988
 
 # Upstream repos vendored at build time (not git submodules).
 ARG TELETALK_REPO=https://github.com/fernando15suarez/teletalk.git
@@ -83,6 +91,7 @@ ARG BD_REPO
 ARG GT_VERSION
 ARG CLAUDE_VERSION
 ARG PYTHON_VERSION
+ARG DOCKER_GID
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -168,6 +177,27 @@ COPY --from=whisper-builder /build/whisper.cpp/build/src/libwhisper.so* /usr/loc
 COPY --from=whisper-builder /build/whisper.cpp/build/ggml/src/libggml*.so* /usr/local/lib/
 RUN ldconfig && whisper-cli --help >/dev/null 2>&1 && echo "whisper-cli installed"
 
+# --- docker CLI ------------------------------------------------------------
+# Just the client + compose plugin; no daemon. The container talks to the
+# host's docker daemon over the bind-mounted /var/run/docker.sock (see
+# docker-compose.yml). This grants effective root-on-host to anyone in the
+# container, justified by branch protection on main + PR-only flow + the
+# operator already trusting the container with full GitHub PAT access.
+# See docs/docker-access.md for the full trust analysis.
+RUN set -eux; \
+    install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc; \
+    chmod a+r /etc/apt/keyrings/docker.asc; \
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${codename} stable" \
+        > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin; \
+    rm -rf /var/lib/apt/lists/*; \
+    docker --version; \
+    docker compose version
+
 # --- non-root user ---------------------------------------------------------
 # All runtime work happens as `gastown` (uid 1000). Matches typical host uid
 # so bind-mounted volumes don't end up root-owned.
@@ -197,6 +227,10 @@ RUN set -eux; \
     else \
       useradd -m -u 1000 -g gastown -s /bin/bash gastown; \
     fi; \
+    if ! getent group docker >/dev/null 2>&1; then \
+      groupadd -g "${DOCKER_GID}" docker; \
+    fi; \
+    usermod -aG docker gastown; \
     mkdir -p /gastown/logs /gastown/repos /gastown/.dolt-data \
              /home/gastown/.claude /home/gastown/.config; \
     chown -R gastown:gastown /gastown /home/gastown

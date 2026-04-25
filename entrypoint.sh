@@ -14,7 +14,12 @@ set -euo pipefail
 
 MODE="${1:-wizard}"
 GASTOWN_HOME="${GASTOWN_HOME:-/gastown}"
-DOLT_PORT="${DOLT_PORT:-3307}"
+DOLT_PORT="${DOLT_PORT:-${GT_DOLT_PORT:-3307}}"
+# Mirror DOLT_PORT to GT_DOLT_PORT so gt-bot (which reads GT_DOLT_PORT)
+# and the rest of the stack stay in lockstep when the operator overrode
+# either name in .env.
+export GT_DOLT_PORT="${DOLT_PORT}"
+export DOLT_PORT
 DOLT_DATA_DIR="${GASTOWN_HOME}/.dolt-data"
 # HQ lives inside /gastown/repos so it survives rebuilds via the
 # `gastown-repos` named volume. /gastown itself is NOT persisted, so
@@ -73,9 +78,17 @@ sync_skills_to_host() {
     fi
 
     log "Mirroring install-gastown skill into host ~/.claude/skills/."
-    mkdir -p "${skills_dst}"
-    cp -f "${skills_src}/SKILL.md" "${skills_dst}/SKILL.md"
-    : >"${sentinel}"
+    # The mirror is nice-to-have — typical breakage is a perm-denied on
+    # ~/.claude/skills when the host bind-mount is owned by a different uid
+    # (e.g. compose run under sudo making HOME=/root, then mounting it
+    # back under a non-root user). Log and continue rather than tripping
+    # `set -euo pipefail` and trapping the container in a boot loop.
+    if ! mkdir -p "${skills_dst}" 2>/dev/null \
+        || ! cp -f "${skills_src}/SKILL.md" "${skills_dst}/SKILL.md" 2>/dev/null \
+        || ! : >"${sentinel}" 2>/dev/null; then
+        warn "Could not mirror install-gastown skill to ${skills_dst} (likely perm-denied) — continuing."
+        return 0
+    fi
 }
 
 # `gt install` calls into Dolt to initialize identity metadata, and Dolt
@@ -91,6 +104,30 @@ ensure_dolt_identity() {
     log "Configuring Dolt identity (${name} <${email}>)."
     dolt config --global --add user.name "${name}"  >/dev/null 2>&1 || true
     dolt config --global --add user.email "${email}" >/dev/null 2>&1 || true
+}
+
+# /var/run/docker.sock is bind-mounted from the host (see docker-compose.yml).
+# Inside the container the file's GID is whatever the host assigned to its
+# docker group, which is rarely the same number as our build-time DOCKER_GID.
+# When they don't match, gastown can't talk to the daemon and `docker compose`
+# fails with a confusing EACCES. Detect that here and tell the operator how
+# to fix it (rebuild with --build-arg DOCKER_GID=...). The mount itself is
+# optional — silently no-op if the operator opted out.
+check_docker_access() {
+    local sock=/var/run/docker.sock
+    if [[ ! -S "${sock}" ]]; then
+        log "docker socket not mounted — skipping daemon access check."
+        return 0
+    fi
+    if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+        log "docker socket reachable (daemon: $(docker version --format '{{.Server.Version}}' 2>/dev/null))."
+        return 0
+    fi
+    local sock_gid container_gid
+    sock_gid="$(stat -c '%g' "${sock}" 2>/dev/null || echo unknown)"
+    container_gid="$(getent group docker | cut -d: -f3 || echo unknown)"
+    warn "docker socket mounted but unreachable (sock GID=${sock_gid}, in-container docker group GID=${container_gid})."
+    warn "Rebuild with: docker compose build --build-arg DOCKER_GID=${sock_gid}"
 }
 
 start_dolt() {
@@ -376,6 +413,7 @@ case "${MODE}" in
         sync_skills_to_host
         start_dolt
         ensure_dolt_identity
+        check_docker_access
         start_gt_bot
         log "Launching wizard — run \`gt-wizard --help\` for individual commands."
         exec "${GASTOWN_HOME}/wizard/gt-wizard" init
@@ -392,6 +430,7 @@ case "${MODE}" in
         #   4. Mayor — needs HQ to exist; is the thing gt-bot mails into.
         start_dolt
         ensure_dolt_identity
+        check_docker_access
         auto_detect_operator_chat_id
         ensure_hq
         start_gt_bot

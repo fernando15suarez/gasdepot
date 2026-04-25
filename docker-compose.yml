@@ -62,6 +62,15 @@ services:
         source: ./.env
         target: /gastown/.env
 
+      # Host docker socket — lets Mayor drive `docker compose` against the
+      # operator's host daemon (e.g. spin up a dev container for PR testing
+      # without paste-and-run from the operator). This grants effective
+      # root-on-host inside the container; see docs/docker-access.md for the
+      # full trust analysis and how to disable.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
     # Keep the wizard interactive when users `docker compose run` or
     # `docker compose exec`. The default `up -d` path uses the `daemon` entry
     # (see entrypoint.sh) instead of the interactive wizard.

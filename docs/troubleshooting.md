@@ -76,6 +76,69 @@ bd q "dolt hang: $(date) — see /tmp/dolt-hang.log"
 docker compose restart gastown
 ```
 
+### `bd` errors with "migration 0028 failed" / `gt patrol new` blocked
+
+Upstream bug in `bd`: migration 28's `DOLT_COMMIT` returns *nothing to commit*
+on a freshly-created rig DB, and `bd` treats that as a hard failure. Upstream
+fix is on the beads `main` branch (PR #3365) but not in any tagged release
+yet, so `bd 1.0.2` and earlier all hit it.
+
+**Workaround.** Pre-seed `schema_migrations` for versions 28–32 so `bd` thinks
+they already ran. Safe and idempotent — if the rows already exist the INSERT
+errors out and the DB is untouched. From the host (or `docker compose exec
+gastown bash`):
+
+```bash
+DBNAME=<rig-db-name>   # e.g. portfolio, mp, hq, racecadence, beads, ...
+dolt --host 127.0.0.1 --port 3307 --user root --password "" --no-tls \
+     --use-db "$DBNAME" sql -q "
+  SET @@autocommit=0;
+  INSERT INTO schema_migrations (version, applied_at) VALUES
+    (28, NOW()), (29, NOW()), (30, NOW()), (31, NOW()), (32, NOW());
+  CALL DOLT_ADD('schema_migrations');
+  CALL DOLT_COMMIT('-m', 'mark migrations 28-32');
+"
+```
+
+Then re-run `bd status` (should be clean) and retry whatever command was
+blocked (`gt patrol new`, `gt rig add`, etc.). If you run `gt rig add` on
+multiple rigs, apply the workaround to each rig's DB.
+
+**Scope check:** `SELECT MAX(version) FROM schema_migrations` per rig DB.
+Values below 28 mean you need the workaround; 28+ means you don't. The
+`beads_global` DB uses a different migrator — 27 there is fine.
+
+### `gt mail send` fails with "failed to deliver" right after `gt rig add`
+
+Related to the previous entry, but a different blast radius. After
+`gt rig add <newrig>`, gt registers a route in
+`/gastown/repos/hq/.beads/routes.jsonl` (e.g. `{"prefix":"ra-","path":"racecadence/mayor/rig"}`)
+pointing at the new rig's beads. `gt mail` appears to consult every route
+during dispatch — so if the new rig's DB is still broken on migration 28
+(or otherwise unopenable), even unrelated `gt mail send mayor/` calls
+fail with `failed to initialize schema: migration 0028_local_state_dolt_ignore.up.sql failed`.
+
+You'll see it most often as the gt-bot Telegram bridge replying
+"Failed to deliver message to Gas Town."
+
+**Two ways to clear it:**
+
+1. *Repair the rig DB* (preferred — see the migration-28 entry above).
+   Once `bd status` works in the rig, the route stops being a poison pill.
+
+2. *Temporarily remove the route* if you don't need to address mail to
+   that rig yet:
+
+   ```bash
+   sed -i.bak '/"prefix":"ra-"/d' /gastown/repos/hq/.beads/routes.jsonl
+   ```
+
+   Replace `ra-` with whichever prefix the new rig got. Restore from
+   `routes.jsonl.bak` once the rig DB is repaired.
+
+Tracked upstream as a `gt`-side bug: mail routing should tolerate a
+failing rig (log a warning, not abort the whole send).
+
 ## "I want to throw it all away and start over"
 
 ```bash

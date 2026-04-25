@@ -122,7 +122,13 @@ def run(args: argparse.Namespace) -> int:
         failures += 1
 
     # --- Dolt TCP ---------------------------------------------------------
-    dolt_port = int(os.environ.get("DOLT_PORT", "3307"))
+    # Accept GT_DOLT_PORT (the bot's own var) or DOLT_PORT (entrypoint's
+    # var) interchangeably so verify checks the same server the bot does.
+    dolt_port = int(
+        os.environ.get("GT_DOLT_PORT")
+        or os.environ.get("DOLT_PORT")
+        or "3307"
+    )
     if _port_open("127.0.0.1", dolt_port):
         if not args.quiet:
             ui.success(f"Dolt reachable on 127.0.0.1:{dolt_port}.")

@@ -1,0 +1,87 @@
+# Gas Town Starter Kit — dev / staging container.
+#
+# Why a separate file (not an extension to docker-compose.yml):
+#   - Operators run dev with `docker compose -f docker-compose.dev.yml ...`
+#     and prod with the default `docker compose ...`. Each lifecycle is
+#     independent: `down` on one never touches the other.
+#   - Volumes, ports, and bot tokens are fully partitioned. There is
+#     intentionally NO shared state between gastown and gastown-dev —
+#     mutating dev cannot corrupt prod's Dolt or repos.
+#
+# Port offsets vs prod (so both can run side-by-side on one host):
+#   - Dolt host port:    3309   (prod 3307)
+#   - gt-bot HTTP port:  3336   (prod 3335)
+#   In-container ports stay 3307 / 3335; only the host mapping shifts.
+#
+# Bot token:
+#   - GT_BOT_TOKEN_DEV in the host .env is mapped to GT_BOT_TOKEN inside
+#     the container. The entrypoint and bot/config.js are unchanged —
+#     they just see whichever token compose hands them at boot.
+#   - Create the dev bot via @BotFather as a SECOND bot (e.g. gasDepotDev).
+#     OPERATOR_TELEGRAM_CHAT_ID is shared with prod; both bots message
+#     the same chat, distinguishable by display name.
+#
+# See docs/dev-environment.md for the operator-facing setup guide.
+
+services:
+  gastown-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Distinct image tag from prod's `gastown-starter:latest`. Rebuilding
+    # dev cannot poison the prod tag — a `docker compose up -d` (prod)
+    # without `--build` will keep running the previously-built prod image.
+    image: gastown-starter-dev:latest
+    container_name: gastown-dev
+    hostname: gastown-dev
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
+    # Override the bot token so the dev container drives the dev bot,
+    # not the prod one. env_file values are loaded first; `environment:`
+    # wins, so GT_BOT_TOKEN here replaces whatever .env shipped.
+    environment:
+      GT_BOT_TOKEN: ${GT_BOT_TOKEN_DEV:-}
+
+    command: ["daemon"]
+
+    # Host-side port offsets keep prod and dev coexistent. Container-side
+    # ports (3307 dolt, 3335 gt-bot) are unchanged.
+    ports:
+      - "3309:3307"
+      - "3336:3335"
+
+    volumes:
+      - type: bind
+        source: ${HOME}/.claude
+        target: /home/gastown/.claude
+
+      # Dev gets its OWN named volumes — no sharing with prod.
+      - gastown-dev-dolt-data:/gastown/.dolt-data
+      - gastown-dev-repos:/gastown/repos
+      - gastown-dev-logs:/gastown/logs
+
+      - type: bind
+        source: ./.env
+        target: /gastown/.env
+
+      # Same docker socket mount as prod. Both containers share host-daemon
+      # access; neither can affect the other's named volumes via this path.
+      # See docs/docker-access.md.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
+    stdin_open: true
+    tty: true
+
+    working_dir: /gastown
+
+volumes:
+  gastown-dev-dolt-data:
+  gastown-dev-repos:
+  gastown-dev-logs:
