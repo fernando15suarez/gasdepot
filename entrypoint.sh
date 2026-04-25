@@ -93,6 +93,30 @@ ensure_dolt_identity() {
     dolt config --global --add user.email "${email}" >/dev/null 2>&1 || true
 }
 
+# /var/run/docker.sock is bind-mounted from the host (see docker-compose.yml).
+# Inside the container the file's GID is whatever the host assigned to its
+# docker group, which is rarely the same number as our build-time DOCKER_GID.
+# When they don't match, gastown can't talk to the daemon and `docker compose`
+# fails with a confusing EACCES. Detect that here and tell the operator how
+# to fix it (rebuild with --build-arg DOCKER_GID=...). The mount itself is
+# optional — silently no-op if the operator opted out.
+check_docker_access() {
+    local sock=/var/run/docker.sock
+    if [[ ! -S "${sock}" ]]; then
+        log "docker socket not mounted — skipping daemon access check."
+        return 0
+    fi
+    if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+        log "docker socket reachable (daemon: $(docker version --format '{{.Server.Version}}' 2>/dev/null))."
+        return 0
+    fi
+    local sock_gid container_gid
+    sock_gid="$(stat -c '%g' "${sock}" 2>/dev/null || echo unknown)"
+    container_gid="$(getent group docker | cut -d: -f3 || echo unknown)"
+    warn "docker socket mounted but unreachable (sock GID=${sock_gid}, in-container docker group GID=${container_gid})."
+    warn "Rebuild with: docker compose build --build-arg DOCKER_GID=${sock_gid}"
+}
+
 start_dolt() {
     if [[ -f "${DOLT_PID}" ]] && kill -0 "$(cat "${DOLT_PID}")" 2>/dev/null; then
         log "Dolt already running (pid $(cat "${DOLT_PID}"))."
@@ -376,6 +400,7 @@ case "${MODE}" in
         sync_skills_to_host
         start_dolt
         ensure_dolt_identity
+        check_docker_access
         start_gt_bot
         log "Launching wizard — run \`gt-wizard --help\` for individual commands."
         exec "${GASTOWN_HOME}/wizard/gt-wizard" init
@@ -392,6 +417,7 @@ case "${MODE}" in
         #   4. Mayor — needs HQ to exist; is the thing gt-bot mails into.
         start_dolt
         ensure_dolt_identity
+        check_docker_access
         auto_detect_operator_chat_id
         ensure_hq
         start_gt_bot

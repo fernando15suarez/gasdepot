@@ -69,6 +69,13 @@ services:
         source: ./.env
         target: /gastown/.env
 
+      # Same docker socket mount as prod. Both containers share host-daemon
+      # access; neither can affect the other's named volumes via this path.
+      # See docs/docker-access.md.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
     stdin_open: true
     tty: true
 
