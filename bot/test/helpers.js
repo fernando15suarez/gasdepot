@@ -127,30 +127,6 @@ function readGtLog(logPath) {
   return entries;
 }
 
-// Replace globalThis.fetch with a stub that returns the bytes from the
-// most-recently-active ctx for any Telegram file CDN URL. Returns the
-// uninstall fn so individual tests can scope the override.
-let activeCtx = null;
-function setActiveFakeFetchCtx(ctx) { activeCtx = ctx; }
-function installFakeFetch() {
-  const orig = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    if (typeof url === "string" && url.startsWith("https://api.telegram.org/file/bot")) {
-      const bytes = activeCtx?.__fileBytes ?? Buffer.from("hello");
-      return {
-        ok: true,
-        status: 200,
-        async arrayBuffer() {
-          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        },
-      };
-    }
-    if (orig) return orig(url);
-    throw new Error(`fakeFetch: unhandled url ${url}`);
-  };
-  return () => { globalThis.fetch = orig; };
-}
-
 module.exports = {
   makeCtx,
   makeReq,

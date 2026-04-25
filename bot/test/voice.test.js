@@ -144,3 +144,65 @@ test("handleTelegramMedia: photo path is unchanged (no transcription attempted)"
     delete process.env.WHISPER_BIN;
   }
 });
+
+// --- handleTelegramMedia: nudge & echo behavior ------------------------
+//
+// The text-message path appends `Reply via: curl ... /send` to the nudge
+// so mayor knows to reply over Telegram. The voice/media path was missing
+// this hint — without it, mayor falls back to gt mail reply and replies
+// land in beads instead of going back to the operator.
+
+test("handleTelegramMedia: nudge text includes Reply via hint with chat id", async () => {
+  setPerms({ "300": { role: "admin", rigs: ["*"] } });
+  fs.writeFileSync(GT.log, "");
+  process.env.WHISPER_FAKE_OUTPUT = "test transcript";
+  try {
+    const ctx = voiceCtx({ chatId: 300 });
+    setActiveFakeFetchCtx(ctx);
+    await handleTelegramMedia(ctx);
+    // The reply hint contains newlines, which the line-oriented readGtLog
+    // truncates. Read the raw log instead and assert against its bytes.
+    const log = readGtLog(GT.log);
+    const nudgeArgs = log.find(e => e.kind === "argv" && e.args[0] === "nudge");
+    assert.ok(nudgeArgs, "expected a gt nudge call from the media path");
+    const raw = fs.readFileSync(GT.log, "utf8");
+    assert.match(raw, /Reply via: curl/, "nudge text should include Reply via: curl");
+    assert.match(raw, /"chat":"300"/, "nudge text should include the originating chat id");
+    assert.match(raw, /\/send/, "nudge text should reference the /send endpoint");
+  } finally {
+    delete process.env.WHISPER_FAKE_OUTPUT;
+  }
+});
+
+test("handleTelegramMedia: echoes the transcript back to operator on Telegram", async () => {
+  setPerms({ "300": { role: "admin", rigs: ["*"] } });
+  fs.writeFileSync(GT.log, "");
+  process.env.WHISPER_FAKE_OUTPUT = "schedule a haircut for tomorrow";
+  try {
+    const ctx = voiceCtx({ chatId: 300 });
+    setActiveFakeFetchCtx(ctx);
+    await handleTelegramMedia(ctx);
+    const echo = ctx.replies.find(r => r.includes("Heard:"));
+    assert.ok(echo, "expected a ctx.reply with `Heard:` echo");
+    assert.match(echo, /schedule a haircut for tomorrow/);
+  } finally {
+    delete process.env.WHISPER_FAKE_OUTPUT;
+  }
+});
+
+test("handleTelegramMedia: no echo when transcription fails (silent fallback)", async () => {
+  setPerms({ "300": { role: "admin", rigs: ["*"] } });
+  fs.writeFileSync(GT.log, "");
+  const prev = process.env.WHISPER_BIN;
+  process.env.WHISPER_BIN = "definitely-not-on-path-zzzz";
+  try {
+    const ctx = voiceCtx({ chatId: 300 });
+    setActiveFakeFetchCtx(ctx);
+    await handleTelegramMedia(ctx);
+    const echo = ctx.replies.find(r => r.includes("Heard:"));
+    assert.equal(echo, undefined, "should not echo when no transcript");
+  } finally {
+    if (prev === undefined) delete process.env.WHISPER_BIN;
+    else process.env.WHISPER_BIN = prev;
+  }
+});
