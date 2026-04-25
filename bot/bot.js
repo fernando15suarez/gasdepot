@@ -561,6 +561,9 @@ async function handleTelegramMedia(ctx) {
   let transcript = null;
   if (info.kind === "voice") {
     transcript = await transcribeVoice(destPath);
+    if (transcript) {
+      try { await ctx.reply(`📝 Heard: ${transcript}`); } catch {}
+    }
   }
 
   const rigs = allowedRigs(chatId);
