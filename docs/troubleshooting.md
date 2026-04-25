@@ -108,6 +108,37 @@ multiple rigs, apply the workaround to each rig's DB.
 Values below 28 mean you need the workaround; 28+ means you don't. The
 `beads_global` DB uses a different migrator — 27 there is fine.
 
+### `gt mail send` fails with "failed to deliver" right after `gt rig add`
+
+Related to the previous entry, but a different blast radius. After
+`gt rig add <newrig>`, gt registers a route in
+`/gastown/repos/hq/.beads/routes.jsonl` (e.g. `{"prefix":"ra-","path":"racecadence/mayor/rig"}`)
+pointing at the new rig's beads. `gt mail` appears to consult every route
+during dispatch — so if the new rig's DB is still broken on migration 28
+(or otherwise unopenable), even unrelated `gt mail send mayor/` calls
+fail with `failed to initialize schema: migration 0028_local_state_dolt_ignore.up.sql failed`.
+
+You'll see it most often as the gt-bot Telegram bridge replying
+"Failed to deliver message to Gas Town."
+
+**Two ways to clear it:**
+
+1. *Repair the rig DB* (preferred — see the migration-28 entry above).
+   Once `bd status` works in the rig, the route stops being a poison pill.
+
+2. *Temporarily remove the route* if you don't need to address mail to
+   that rig yet:
+
+   ```bash
+   sed -i.bak '/"prefix":"ra-"/d' /gastown/repos/hq/.beads/routes.jsonl
+   ```
+
+   Replace `ra-` with whichever prefix the new rig got. Restore from
+   `routes.jsonl.bak` once the rig DB is repaired.
+
+Tracked upstream as a `gt`-side bug: mail routing should tolerate a
+failing rig (log a warning, not abort the whole send).
+
 ## "I want to throw it all away and start over"
 
 ```bash
