@@ -52,6 +52,7 @@ After onboarding completes:
 - **Beads DB** — Mayor's queue for the work you hand it.
 - **A running container** named `gastown` with the toolchain pinned to known-good versions.
 - **Optional dev/staging container** — `docker-compose.dev.yml` boots a parallel `gastown-dev` container with its own Dolt, repos, logs, and Telegram bot, so you can iterate on the starter kit without putting prod's bridge at risk. See [`docs/dev-environment.md`](docs/dev-environment.md).
+- **Mayor default memories** — a small set of behavior guidelines (when to push work to a polecat, how to ack Telegram messages) seeded into Mayor's memory store on first init from [`mayor-default-memories.json`](mayor-default-memories.json). See [`docs/default-memories.md`](docs/default-memories.md).
 
 Your first move after install is to DM gt-bot on Telegram and ask Mayor to spawn your first rig. No example rig is pre-scaffolded — you create the work you care about.
 

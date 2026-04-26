@@ -267,6 +267,7 @@ COPY --from=sources --chown=gastown:gastown /src/crow /opt/crow
 COPY --chown=gastown:gastown wizard /gastown/wizard
 COPY --chown=gastown:gastown entrypoint.sh /gastown/entrypoint.sh
 COPY --chown=gastown:gastown .env.example /gastown/.env.example
+COPY --chown=gastown:gastown mayor-default-memories.json /gastown/mayor-default-memories.json
 COPY --chown=gastown:gastown docs /gastown/docs
 COPY --chown=gastown:gastown skills /gastown/skills
 COPY --chown=gastown:gastown bot /gastown/bot
