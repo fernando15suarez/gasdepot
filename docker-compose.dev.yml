@@ -21,6 +21,20 @@
 #     OPERATOR_TELEGRAM_CHAT_ID is shared with prod; both bots message
 #     the same chat, distinguishable by display name.
 #
+# Trust posture:
+#   Dev mirrors prod's lightweight default — no docker-socket bind, no
+#   voice transcription. To iterate on those features in dev, pass the
+#   build args directly:
+#
+#     docker compose -f docker-compose.dev.yml build \
+#         --build-arg INSTALL_VOICE=1 \
+#         --build-arg INSTALL_DOCKER=1 \
+#         --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+#
+#   The prod overlays (docker-compose.docker-host.yml, docker-compose.voice.yml)
+#   target the `gastown` service, not `gastown-dev`, so they don't stack onto
+#   this file directly. Use the build args above instead.
+#
 # See docs/dev-environment.md for the operator-facing setup guide.
 
 services:
@@ -28,6 +42,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Match the lightweight default. Override at the CLI to iterate on
+      # voice / docker-host features in dev without touching prod.
+      args:
+        INSTALL_VOICE: "0"
+        INSTALL_DOCKER: "0"
     # Distinct image tag from prod's `gastown-starter:latest`. Rebuilding
     # dev cannot poison the prod tag — a `docker compose up -d` (prod)
     # without `--build` will keep running the previously-built prod image.
@@ -68,13 +87,6 @@ services:
       - type: bind
         source: ./.env
         target: /gastown/.env
-
-      # Same docker socket mount as prod. Both containers share host-daemon
-      # access; neither can affect the other's named volumes via this path.
-      # See docs/docker-access.md.
-      - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
 
     stdin_open: true
     tty: true
