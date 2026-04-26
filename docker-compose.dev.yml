@@ -64,6 +64,8 @@ services:
       - gastown-dev-dolt-data:/gastown/.dolt-data
       - gastown-dev-repos:/gastown/repos
       - gastown-dev-logs:/gastown/logs
+      # Whisper model cache (lazy-downloaded on first voice DM).
+      - gastown-dev-whisper-models:/opt/whisper/models
 
       - type: bind
         source: ./.env
@@ -85,3 +87,4 @@ volumes:
   gastown-dev-dolt-data:
   gastown-dev-repos:
   gastown-dev-logs:
+  gastown-dev-whisper-models:

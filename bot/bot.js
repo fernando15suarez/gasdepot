@@ -39,19 +39,27 @@ const CLAUDE_HOME = process.env.CLAUDE_HOME
 const INBOX_DIR = process.env.GT_BOT_INBOX_DIR
   || `${process.env.GT_TOWN_ROOT || "/gastown/repos/hq"}/mayor/inbox`;
 
-// Voice transcription tooling. Both binaries ship with the Docker image
-// (ffmpeg via apt, whisper-cli built from source in a separate stage; the
-// model is baked in at /opt/whisper/models/). Read at call time so env
-// overrides take effect without a process restart, and so tests can swap
-// the binary path between cases.
+// Voice transcription tooling. The whisper-cli binary and ffmpeg ship with
+// the Docker image (ffmpeg via apt, whisper-cli built from source in a
+// separate stage). The whisper model is NOT baked into the image — it's
+// lazy-downloaded on first voice DM, see ensureWhisperModel() below. Read
+// at call time so env overrides take effect without a process restart, and
+// so tests can swap the binary path between cases.
 function whisperConfig() {
   return {
     ffmpeg: process.env.FFMPEG_BIN || "ffmpeg",
     whisper: process.env.WHISPER_BIN || "whisper-cli",
     model: process.env.WHISPER_MODEL || "/opt/whisper/models/ggml-tiny.en.bin",
     lang: process.env.WHISPER_LANG || "en",
+    modelUrlBase: process.env.WHISPER_MODEL_URL_BASE
+      || "https://huggingface.co/ggerganov/whisper.cpp/resolve/main",
   };
 }
+
+// In-flight download promise for the whisper model. Single-flight so two
+// concurrent voice DMs hitting a missing model wait on one download instead
+// of double-fetching ~75 MB and racing on disk.
+let whisperModelDownloadPromise = null;
 
 // --- Permissions cache -------------------------------------------------
 
@@ -493,6 +501,71 @@ async function downloadTelegramFile(token, filePath, destPath) {
   await fsp.writeFile(destPath, buf);
 }
 
+// Lazy-download the whisper model on first voice. The Dockerfile keeps the
+// model out of the image (~75 MB) so cloners who never use voice don't pay
+// for it. On the first voice DM we curl the model from the canonical
+// HuggingFace mirror, with a single-flight lock so concurrent voice DMs
+// don't double-fetch.
+//
+// UX: when the model is missing we ctx.reply BEFORE the download so the
+// operator knows why there's a ~30s delay. Subsequent voice DMs hit the
+// fast path (file exists → return immediately).
+//
+// Returns true when the model is on disk and ready for transcription,
+// false if download failed (caller falls back to path-only delivery).
+async function ensureWhisperModel(ctx) {
+  const cfg = whisperConfig();
+  const modelPath = cfg.model;
+
+  try {
+    await fsp.access(modelPath);
+    return true;
+  } catch {
+    // Model missing — fall through to download below.
+  }
+
+  if (whisperModelDownloadPromise) {
+    return whisperModelDownloadPromise;
+  }
+
+  const work = (async () => {
+    // Operator-explicit feedback BEFORE the slow download so the latency
+    // doesn't feel like a hang. Best-effort — if Telegram replies are
+    // failing we still want the download to proceed.
+    try {
+      await ctx.reply(
+        "First voice on this install — downloading whisper model (~75 MB), this'll take ~30s.",
+      );
+    } catch (err) {
+      console.error("ctx.reply (whisper model notice) failed:", err.message);
+    }
+
+    try {
+      await fsp.mkdir(path.dirname(modelPath), { recursive: true });
+      const filename = path.basename(modelPath);
+      const url = `${cfg.modelUrlBase}/${filename}`;
+      const tmpPath = `${modelPath}.partial`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`model URL returned ${res.status}: ${url}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      // Write to a partial path then atomic-rename so a crashed download
+      // doesn't leave a half-written model that whisper-cli would choke on.
+      await fsp.writeFile(tmpPath, buf);
+      await fsp.rename(tmpPath, modelPath);
+      console.log(`whisper model downloaded to ${modelPath} (${buf.length} bytes)`);
+      return true;
+    } catch (err) {
+      console.error("whisper model download failed:", err.message);
+      return false;
+    }
+  })();
+
+  whisperModelDownloadPromise = work.finally(() => {
+    whisperModelDownloadPromise = null;
+  });
+  return whisperModelDownloadPromise;
+}
+
 // Convert Telegram's ogg/opus voice file to whisper.cpp's expected format
 // (16kHz mono PCM WAV) and run whisper-cli. Returns the trimmed transcript
 // or null on any failure — the caller falls back to path-only delivery so
@@ -557,12 +630,17 @@ async function handleTelegramMedia(ctx) {
 
   // Voice gets transcribed in-process so mayor receives readable text, not
   // just a path. On transcription failure we fall back to the path-only
-  // delivery — the message is never lost.
+  // delivery — the message is never lost. The model is lazy-downloaded on
+  // first voice DM (see ensureWhisperModel); if the download fails we also
+  // fall through to path-only.
   let transcript = null;
   if (info.kind === "voice") {
-    transcript = await transcribeVoice(destPath);
-    if (transcript) {
-      try { await ctx.reply(`📝 Heard: ${transcript}`); } catch {}
+    const modelOk = await ensureWhisperModel(ctx);
+    if (modelOk) {
+      transcript = await transcribeVoice(destPath);
+      if (transcript) {
+        try { await ctx.reply(`📝 Heard: ${transcript}`); } catch {}
+      }
     }
   }
 
@@ -887,6 +965,8 @@ module.exports = {
     handleSendFile,
     // Voice
     transcribeVoice,
+    ensureWhisperModel,
+    resetWhisperModelDownload: () => { whisperModelDownloadPromise = null; },
     // Common
     handleTelegramText,
     handleSend,

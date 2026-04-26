@@ -15,11 +15,14 @@ ARG BD_REPO=gastownhall/beads
 ARG GT_VERSION=0.12.0
 ARG CLAUDE_VERSION=2.1.117
 
-# Local voice transcription. WHISPER_REF pins whisper.cpp; the binary and
-# WHISPER_MODEL are baked into the runtime layer so cloners get voice
-# support out of the box without any additional setup.
+# Local voice transcription. WHISPER_REF pins whisper.cpp; only the
+# whisper-cli binary is baked into the runtime layer. The model file
+# (~75 MB) is lazy-downloaded by gt-bot on the first voice DM — see
+# ensureWhisperModel() in bot/bot.js. The default model filename and URL
+# are configured via the WHISPER_MODEL / WHISPER_MODEL_URL_BASE env vars
+# that the bot reads at request time. Most cloners may never use voice,
+# so keeping the model out of the default image keeps the install slim.
 ARG WHISPER_REF=v1.7.5
-ARG WHISPER_MODEL=ggml-tiny.en.bin
 
 # GID for the in-container `docker` group. Must match the GID that owns
 # /var/run/docker.sock on the host or `docker` calls inside the container
@@ -61,7 +64,6 @@ RUN git clone --depth 1 --branch "${CROW_REF}" "${CROW_REPO}" crow \
 # -----------------------------------------------------------------------------
 FROM debian:${DEBIAN_VERSION}-slim AS whisper-builder
 ARG WHISPER_REF
-ARG WHISPER_MODEL
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -77,8 +79,7 @@ WORKDIR /build
 RUN git clone --depth 1 --branch "${WHISPER_REF}" https://github.com/ggerganov/whisper.cpp /build/whisper.cpp \
     && cd /build/whisper.cpp \
     && cmake -B build -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build -j --config Release --target whisper-cli \
-    && bash ./models/download-ggml-model.sh "$(echo "${WHISPER_MODEL}" | sed -E 's/^ggml-(.+)\.bin$/\1/')"
+    && cmake --build build -j --config Release --target whisper-cli
 
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime image. Node + Python + the Gas Town toolchain.
@@ -166,11 +167,12 @@ RUN npm install -g "@gastown/gt@${GT_VERSION}" \
     && gt --version
 
 # --- whisper.cpp (local voice transcription) ------------------------------
-# Binary + model copied from the builder stage; ffmpeg comes from apt above.
-# WHISPER_MODEL is the filename only — the path is fixed at /opt/whisper/.
-ARG WHISPER_MODEL
+# Only the whisper-cli binary + libs are baked in; ffmpeg comes from apt
+# above. The model file (~75 MB) is lazy-downloaded by gt-bot on the first
+# voice DM — see ensureWhisperModel() in bot/bot.js. We pre-create the
+# /opt/whisper/models/ directory and chown it to gastown so the bot can
+# write the downloaded model without needing /opt-write privileges.
 COPY --from=whisper-builder /build/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
-COPY --from=whisper-builder /build/whisper.cpp/models/${WHISPER_MODEL} /opt/whisper/models/${WHISPER_MODEL}
 # Whisper.cpp ships its libs alongside the binary; copy them into a path
 # the dynamic linker already searches so we don't have to set LD_LIBRARY_PATH.
 COPY --from=whisper-builder /build/whisper.cpp/build/src/libwhisper.so* /usr/local/lib/
@@ -232,8 +234,9 @@ RUN set -eux; \
     fi; \
     usermod -aG docker gastown; \
     mkdir -p /gastown/logs /gastown/repos /gastown/.dolt-data \
-             /home/gastown/.claude /home/gastown/.config; \
-    chown -R gastown:gastown /gastown /home/gastown
+             /home/gastown/.claude /home/gastown/.config \
+             /opt/whisper/models; \
+    chown -R gastown:gastown /gastown /home/gastown /opt/whisper
 
 # --- claude (Claude Code CLI) ---------------------------------------------
 # Install AS the gastown user so the binary lands in /home/gastown/.local,
