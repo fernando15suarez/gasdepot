@@ -1,0 +1,43 @@
+# Gas Town Starter Kit — local voice transcription overlay (OPT-IN).
+#
+# Activating this overlay tells the build to install ffmpeg + build
+# whisper.cpp from source. The whisper model itself (~75 MB) is NOT baked
+# into the image — gt-bot lazy-downloads it to /opt/whisper/models/ on the
+# first voice DM (see ensureWhisperModel() in bot/bot.js). With this
+# overlay active, gt-bot transcribes Telegram voice messages locally and
+# forwards the transcript to Mayor as text. Without it, gt-bot still
+# accepts voice messages — but forwards them as path-only attachments and
+# lets Mayor ask the operator to listen by hand.
+#
+# Build cost:
+#   First build pulls + compiles whisper.cpp (~1-2 min on a typical
+#   laptop). The model is fetched at runtime, not build time, so build
+#   layers stay cache-friendly across WHISPER_MODEL changes. Final image
+#   is ~80-130MB heavier than the lightweight default (whisper-cli + libs
+#   + ffmpeg).
+#
+# Runtime cost:
+#   On the very first voice DM, gt-bot downloads the model (~30s on a
+#   typical home connection) and replies once with a "downloading model"
+#   notice. Subsequent DMs use the cached model on the persisted volume.
+#
+# Usage:
+#
+#   # One-off:
+#   docker compose -f docker-compose.yml -f docker-compose.voice.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.voice.yml up -d
+#
+#   # Persisted via .env:
+#   echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.voice.yml' >> .env
+
+services:
+  gastown:
+    build:
+      args:
+        # Tells the Dockerfile to install ffmpeg + whisper.cpp. The
+        # Dockerfile selects the `whisper-1` builder stage when this is
+        # "1", which clones whisper.cpp at WHISPER_REF and builds the
+        # whisper-cli binary. The ggml model file is lazy-downloaded by
+        # gt-bot at request time (WHISPER_MODEL / WHISPER_MODEL_URL_BASE
+        # env vars).
+        INSTALL_VOICE: "1"
