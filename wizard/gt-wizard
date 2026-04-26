@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Gas Town starter-kit wizard.
+"""gasDepot wizard.
 
 A thin argparse dispatcher over the primitive commands in `commands/`. Each
 primitive is idempotent: running `init` twice does not duplicate state, running
-`setup-telegram` twice lets you swap tokens. The Claude `/install-gastown`
+`setup-telegram` twice lets you swap tokens. The Claude `/install-gasDepot`
 skill orchestrates these primitives conversationally.
 
 Kept deliberately small. If you're tempted to add "framework" here, push the

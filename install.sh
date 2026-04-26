@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Gas Town Starter Kit — no-Claude installer.
+# gasDepot — no-Claude installer.
 #
 # Builds the image, brings up the stack, and drops the user into the
-# wizard for token entry. Mirrors the steps the `install-gastown` Claude
+# wizard for token entry. Mirrors the steps the `install-gasDepot` Claude
 # skill performs, so users without Claude Code can still onboard.
 #
 # Usage:

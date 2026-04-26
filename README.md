@@ -1,4 +1,4 @@
-# Gas Town Starter Kit
+# gasDepot
 
 A Dockerized onboarding rig for [Gas Town](https://github.com/gastownhall/gastown) — the multi-agent AI workspace framework. Clone this repo, open it in Claude Code, and in a few minutes you'll have **Mayor** running against your own Claude auth, with **gt-bot** bridging Mayor to Telegram. **TeleTalk** and **Crow** remain available as optional add-ons.
 
@@ -20,15 +20,15 @@ cd gasdepot
 
 1. **Install the prerequisites** on your host (see below).
 2. **Clone this repo** and `cd` into it.
-3. **Open it in Claude Code** and run `/install-gastown`.
+3. **Open it in Claude Code** and run `/install-gasDepot`.
 
 ```bash
-git clone <this-repo-url> gastown-starter
-cd gastown-starter
-claude   # then, inside Claude Code, run: /install-gastown
+git clone <this-repo-url> gasdepot
+cd gasdepot
+claude   # then, inside Claude Code, run: /install-gasDepot
 ```
 
-The `/install-gastown` skill walks you through the rest — creating a single Telegram bot for gt-bot, wiring up Claude auth, and booting Mayor. When `docker compose up -d` finishes, Dolt, gt-bot, the HQ (at `/gastown`), and Mayor are all already running; `gt-wizard start` is idempotent and safe to re-run. You can also drive the underlying CLI directly: `./wizard/gt-wizard init`.
+The `/install-gasDepot` skill walks you through the rest — creating a single Telegram bot for gt-bot, wiring up Claude auth, and booting Mayor. When `docker compose up -d` finishes, Dolt, gt-bot, the HQ (at `/gastown`), and Mayor are all already running; `gt-wizard start` is idempotent and safe to re-run. You can also drive the underlying CLI directly: `./wizard/gt-wizard init`.
 
 ## Prerequisites (install on your host, not in the container)
 
@@ -52,6 +52,7 @@ After onboarding completes:
 - **Beads DB** — Mayor's queue for the work you hand it.
 - **A running container** named `gastown` with the toolchain pinned to known-good versions.
 - **Optional dev/staging container** — `docker-compose.dev.yml` boots a parallel `gastown-dev` container with its own Dolt, repos, logs, and Telegram bot, so you can iterate on the starter kit without putting prod's bridge at risk. See [`docs/dev-environment.md`](docs/dev-environment.md).
+- **Mayor default memories** — a small set of behavior guidelines (when to push work to a polecat, how to ack Telegram messages) seeded into Mayor's memory store on first init from [`mayor-default-memories.json`](mayor-default-memories.json). See [`docs/default-memories.md`](docs/default-memories.md).
 
 Your first move after install is to DM gt-bot on Telegram and ask Mayor to spawn your first rig. No example rig is pre-scaffolded — you create the work you care about.
 
@@ -78,7 +79,7 @@ Your Dolt data, Claude config, `.env`, and user repos live on named volumes and 
 | `.env.example` | Template for Telegram tokens (`GT_BOT_TOKEN` required; `GT_BOT_TOKEN_DEV` for the dev container; TeleTalk/Crow optional) and Anthropic key (copy to `.env`) |
 | `bot/` | gt-bot — bundled Telegram bridge (auto-started by `entrypoint.sh`) |
 | `wizard/` | CLI primitives — idempotent scripts the skill orchestrates |
-| `.claude/skills/install-gastown/` | The conversational onboarding skill |
+| `.claude/skills/install-gasDepot/` | The conversational onboarding skill |
 | `docs/` | Short guides — first rig, updating, troubleshooting |
 | `.beads/` | This repo's own beads DB — track starter-kit bugs here |
 

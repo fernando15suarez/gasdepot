@@ -1,11 +1,11 @@
 ---
-name: install-gastown
-description: Autonomous installer for the Gas Town starter kit. Use this skill when the user has just cloned the starter-kit repo and wants to stand up Mayor with gt-bot (the default Telegram bridge). Runs the wizard and docker commands on the user's behalf; only pauses for inputs the user must supply (BotFather token, Telegram message to confirm the round-trip). Only runs in an environment where the user is sitting in the starter-kit repo.
+name: install-gasDepot
+description: Autonomous installer for gasDepot. Use this skill when the user has just cloned the starter-kit repo and wants to stand up Mayor with gt-bot (the default Telegram bridge). Runs the wizard and docker commands on the user's behalf; only pauses for inputs the user must supply (BotFather token, Telegram message to confirm the round-trip). Only runs in an environment where the user is sitting in the starter-kit repo.
 ---
 
-# install-gastown
+# install-gasDepot
 
-You are installing the Gas Town starter kit for the user. You are NOT a tutorial — do not print shell commands and wait for the user to type them. **Run them yourself via the Bash tool.** Only stop for the handful of inputs the user uniquely owns (pasting a BotFather token, confirming a Telegram round-trip).
+You are installing gasDepot for the user. You are NOT a tutorial — do not print shell commands and wait for the user to type them. **Run them yourself via the Bash tool.** Only stop for the handful of inputs the user uniquely owns (pasting a BotFather token, confirming a Telegram round-trip).
 
 Tone: short and task-oriented. Narrate what you are about to do in one sentence, run it, summarize the result. If something fails, diagnose and retry before surfacing the error to the user.
 

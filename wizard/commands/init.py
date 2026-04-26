@@ -27,7 +27,7 @@ def register(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    ui.header("Gas Town starter kit — install")
+    ui.header("gasDepot — install")
 
     ui.info(
         "This flow will: collect your Telegram bot tokens, verify Claude auth, "
@@ -53,7 +53,7 @@ def run(args: argparse.Namespace) -> int:
 
     ui.header("Next steps")
     ui.info("Run `gt-wizard start` to launch Mayor, TeleTalk, and Crow.")
-    ui.info("Or, inside Claude Code, continue the conversation with the install-gastown skill.")
+    ui.info("Or, inside Claude Code, continue the conversation with the install-gasDepot skill.")
     return 0
 
 

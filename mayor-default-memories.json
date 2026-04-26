@@ -1,0 +1,12 @@
+{
+  "memories": [
+    {
+      "key": "polecat-first",
+      "body": "For implementation work that spans more than a one-file tweak (multi-file, file+tests, Dockerfile change), file a bead with the agreed plan and sling to a polecat. Stay in Mayor for design + chat. Quick one-file tweaks under ~50 lines stay in Mayor since polecat overhead would swamp them. The polecat workflow is the dogfood of gasDepot — using it is the point."
+    },
+    {
+      "key": "ack-every-telegram-message",
+      "body": "Every Telegram message from the operator gets an immediate ack via curl POST http://localhost:$GT_BOT_PORT/send before any tool work — something like \"Heard, starting on that now.\" or \"Got it, looking.\" Do NOT send periodic 2-min heartbeats while working — that's noisy. The bot's busy-notice handles the case where a NEW message arrives mid-task automatically; the per-message ack is on you for the first response."
+    }
+  ]
+}

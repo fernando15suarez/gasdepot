@@ -14,7 +14,9 @@ Deacon startup path.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -28,6 +30,11 @@ HELP = "Install the HQ if missing, then launch Deacon + Mayor."
 
 MAYOR_SESSION = "hq-mayor"
 MAYOR_WAIT_SECONDS = 30
+
+# Repo root holds the seed file; wizard lives one level down.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+MEMORY_SEED_FILE = _REPO_ROOT / "mayor-default-memories.json"
+MEMORY_SEED_SENTINEL = ".gasdepot-memories-seeded"
 
 
 def _default_hq_path() -> str:
@@ -96,12 +103,79 @@ def run(args: argparse.Namespace) -> int:
 
     ui.success(f"Mayor is up (tmux session `{MAYOR_SESSION}`).")
 
+    _seed_default_memories(hq)
+
     ui.header("Next steps")
     ui.info("• `docker compose exec gastown gt agents` — list live agent sessions.")
     ui.info("• `docker compose exec gastown gt-wizard verify` — end-to-end health check.")
     ui.info("• DM gt-bot on Telegram with `hello mayor` — confirm the round trip.")
     ui.info("• `docker compose exec gastown bash` — drop into a shell inside the HQ.")
     return 0
+
+
+def _seed_default_memories(hq: Path) -> None:
+    """Seed Mayor's memory store from `mayor-default-memories.json` once.
+
+    One-shot at first init: a sentinel under the HQ records that we've run.
+    Failures of individual `gt remember` calls are logged and skipped — we
+    never fail the wizard for memory seeding.
+    """
+    sentinel = hq / MEMORY_SEED_SENTINEL
+    if sentinel.exists():
+        return
+
+    if not MEMORY_SEED_FILE.is_file():
+        ui.info(f"No memory seed file at {MEMORY_SEED_FILE} — skipping default memories.")
+        return
+
+    if shutil.which("gt") is None:
+        ui.warn(
+            "`gt` not on PATH — skipping default-memory seed. "
+            f"Run later via: gt remember --key <k> \"<body>\" (entries in {MEMORY_SEED_FILE.name})."
+        )
+        return
+
+    try:
+        data = json.loads(MEMORY_SEED_FILE.read_text())
+        entries = data.get("memories", [])
+    except (OSError, json.JSONDecodeError) as exc:
+        ui.warn(f"Could not read {MEMORY_SEED_FILE}: {exc} — skipping default memories.")
+        return
+
+    seeded = 0
+    for entry in entries:
+        key = entry.get("key")
+        body = entry.get("body")
+        if not key or not body:
+            ui.warn(f"Skipping malformed memory entry: {entry!r}")
+            continue
+        try:
+            proc = subprocess.run(
+                ["gt", "remember", "--key", key, body],
+                cwd=str(hq),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            ui.warn(f"`gt remember --key {key}` failed: {exc}")
+            continue
+        if proc.returncode != 0:
+            ui.warn(
+                f"`gt remember --key {key}` exited {proc.returncode}: "
+                f"{(proc.stderr or proc.stdout).strip()}"
+            )
+            continue
+        ui.info(f"seeded memory: {key}")
+        seeded += 1
+
+    # Only stamp the sentinel if at least one seed succeeded — otherwise we
+    # want a future run to retry (e.g. `gt` came online after this attempt).
+    if seeded:
+        try:
+            sentinel.touch()
+        except OSError as exc:
+            ui.warn(f"Could not write {sentinel}: {exc} — memories may reseed next run.")
 
 
 def _wait_for_mayor(timeout: int) -> bool:
