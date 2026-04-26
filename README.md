@@ -1,4 +1,4 @@
-# Gas Town Starter Kit
+# gasDepot
 
 A Dockerized onboarding rig for [Gas Town](https://github.com/gastownhall/gastown) — the multi-agent AI workspace framework. Clone this repo, open it in Claude Code, and in a few minutes you'll have **Mayor** running against your own Claude auth, with **gt-bot** bridging Mayor to Telegram. **TeleTalk** and **Crow** remain available as optional add-ons.
 
@@ -20,15 +20,15 @@ cd gasdepot
 
 1. **Install the prerequisites** on your host (see below).
 2. **Clone this repo** and `cd` into it.
-3. **Open it in Claude Code** and run `/install-gastown`.
+3. **Open it in Claude Code** and run `/install-gasDepot`.
 
 ```bash
-git clone <this-repo-url> gastown-starter
-cd gastown-starter
-claude   # then, inside Claude Code, run: /install-gastown
+git clone <this-repo-url> gasdepot
+cd gasdepot
+claude   # then, inside Claude Code, run: /install-gasDepot
 ```
 
-The `/install-gastown` skill walks you through the rest — creating a single Telegram bot for gt-bot, wiring up Claude auth, and booting Mayor. When `docker compose up -d` finishes, Dolt, gt-bot, the HQ (at `/gastown`), and Mayor are all already running; `gt-wizard start` is idempotent and safe to re-run. You can also drive the underlying CLI directly: `./wizard/gt-wizard init`.
+The `/install-gasDepot` skill walks you through the rest — creating a single Telegram bot for gt-bot, wiring up Claude auth, and booting Mayor. When `docker compose up -d` finishes, Dolt, gt-bot, the HQ (at `/gastown`), and Mayor are all already running; `gt-wizard start` is idempotent and safe to re-run. You can also drive the underlying CLI directly: `./wizard/gt-wizard init`.
 
 ## Prerequisites (install on your host, not in the container)
 
@@ -78,7 +78,7 @@ Your Dolt data, Claude config, `.env`, and user repos live on named volumes and 
 | `.env.example` | Template for Telegram tokens (`GT_BOT_TOKEN` required; `GT_BOT_TOKEN_DEV` for the dev container; TeleTalk/Crow optional) and Anthropic key (copy to `.env`) |
 | `bot/` | gt-bot — bundled Telegram bridge (auto-started by `entrypoint.sh`) |
 | `wizard/` | CLI primitives — idempotent scripts the skill orchestrates |
-| `.claude/skills/install-gastown/` | The conversational onboarding skill |
+| `.claude/skills/install-gasDepot/` | The conversational onboarding skill |
 | `docs/` | Short guides — first rig, updating, troubleshooting |
 | `.beads/` | This repo's own beads DB — track starter-kit bugs here |
 

@@ -275,12 +275,12 @@ COPY --chown=gastown:gastown bot /gastown/bot
 # Use --omit=dev to keep the image small; gt-bot has no devDependencies today.
 RUN cd /gastown/bot && npm install --omit=dev --no-audit --no-fund
 
-# Materialize the install-gastown skill into the container's Claude config
+# Materialize the install-gasDepot skill into the container's Claude config
 # directory. Sources live under /gastown/skills/ (plain path, always checked
 # in). The entrypoint mirrors the same tree into the user's mounted
 # ~/.claude on first run so the host `claude` CLI can use it too.
-RUN mkdir -p /gastown/.claude/skills/install-gastown \
-    && cp /gastown/skills/install-gastown/SKILL.md /gastown/.claude/skills/install-gastown/SKILL.md
+RUN mkdir -p /gastown/.claude/skills/install-gasDepot \
+    && cp /gastown/skills/install-gasDepot/SKILL.md /gastown/.claude/skills/install-gasDepot/SKILL.md
 
 RUN chmod +x /gastown/entrypoint.sh /gastown/wizard/gt-wizard
 

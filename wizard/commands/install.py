@@ -4,7 +4,7 @@ Thin wrapper around `gt install $GT_TOWN_ROOT --force --name gastown`. Idempoten
 `--force` re-runs in an existing HQ without clobbering `town.json` or
 `rigs.json`, so this is safe to call on every container boot.
 
-This primitive exists so the entrypoint, the `/install-gastown` skill, and the
+This primitive exists so the entrypoint, the `/install-gasDepot` skill, and the
 `gt-wizard start` flow can all converge on one place that knows how to bring
 up the workspace. Before this existed, `gt-wizard verify` was happily passing
 on containers where the HQ had never been created — and therefore `gt mail

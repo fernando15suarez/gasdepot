@@ -6,7 +6,7 @@ This guide walks you through creating a tiny rig (`notes`) end-to-end so you see
 
 ## Prerequisites
 
-- The [install flow](install-gastown-skill.md) completed successfully.
+- The [install flow](install-gasDepot-skill.md) completed successfully.
 - `docker compose exec gastown gt-wizard verify` prints `All checks passed.`.
 - TeleTalk and Crow bots are running (the `gt-wizard start` output showed you how).
 - You've DM'd the TeleTalk bot from the Telegram account whose chat ID is in `.env` under `OPERATOR_TELEGRAM_CHAT_ID`.

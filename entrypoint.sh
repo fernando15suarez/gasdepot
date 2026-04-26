@@ -56,14 +56,14 @@ ensure_env_file() {
 
 sync_skills_to_host() {
     # The user's host ~/.claude is bind-mounted at ~gastown/.claude. We copy
-    # skills/install-gastown into it so the host `claude` CLI sees the skill
-    # when the user runs /install-gastown from the cloned repo directory.
+    # skills/install-gasDepot into it so the host `claude` CLI sees the skill
+    # when the user runs /install-gasDepot from the cloned repo directory.
     #
     # Sentinel file ensures we only sync on first run or when the user explicitly
     # deletes the sentinel to force a re-sync. Avoids trampling user-edited skills.
     local host_claude="/home/gastown/.claude"
-    local skills_src="${GASTOWN_HOME}/skills/install-gastown"
-    local skills_dst="${host_claude}/skills/install-gastown"
+    local skills_src="${GASTOWN_HOME}/skills/install-gasDepot"
+    local skills_dst="${host_claude}/skills/install-gasDepot"
     local sentinel="${skills_dst}/.gastown-synced"
 
     if [[ ! -d "${skills_src}" ]]; then
@@ -77,7 +77,7 @@ sync_skills_to_host() {
         return 0
     fi
 
-    log "Mirroring install-gastown skill into host ~/.claude/skills/."
+    log "Mirroring install-gasDepot skill into host ~/.claude/skills/."
     # The mirror is nice-to-have — typical breakage is a perm-denied on
     # ~/.claude/skills when the host bind-mount is owned by a different uid
     # (e.g. compose run under sudo making HOME=/root, then mounting it
@@ -86,7 +86,7 @@ sync_skills_to_host() {
     if ! mkdir -p "${skills_dst}" 2>/dev/null \
         || ! cp -f "${skills_src}/SKILL.md" "${skills_dst}/SKILL.md" 2>/dev/null \
         || ! : >"${sentinel}" 2>/dev/null; then
-        warn "Could not mirror install-gastown skill to ${skills_dst} (likely perm-denied) — continuing."
+        warn "Could not mirror install-gasDepot skill to ${skills_dst} (likely perm-denied) — continuing."
         return 0
     fi
 }
