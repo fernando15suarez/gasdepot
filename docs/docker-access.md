@@ -1,6 +1,8 @@
 # Docker access from inside the container
 
-The `gastown` container ships with a docker CLI and a bind mount of the host's `/var/run/docker.sock`. This lets Mayor (and anything else running inside the container) drive the host docker daemon directly: build images, start containers, run `docker compose`. The intended use case is letting Mayor spin up a dev container for PR testing without paste-and-run from the operator.
+Docker access is **opt-in** via the `docker-compose.docker-host.yml` overlay. When enabled, the `gastown` container ships with a docker CLI and a bind mount of the host's `/var/run/docker.sock`. This lets Mayor (and anything else running inside the container) drive the host docker daemon directly: build images, start containers, run `docker compose`. The intended use case is letting Mayor spin up a dev container for PR testing — or letting downstream projects you scaffold inside the container drive their own docker stacks — without paste-and-run from the operator.
+
+The default install (plain `docker compose up`) does **not** include this overlay: no docker CLI, no socket bind, no `docker` group inside the container. You have to deliberately turn it on.
 
 ## What this grants
 
@@ -29,11 +31,29 @@ Adding docker socket access doesn't materially expand the blast radius beyond wh
 
 If you intend to host this for multiple users, multi-tenant agents, or untrusted third parties, **revoke socket access** before doing so (see below).
 
+## How to enable
+
+The overlay model means you opt in by adding `docker-compose.docker-host.yml` to your compose stack. Two ways:
+
+```bash
+# One-off (per command):
+docker compose -f docker-compose.yml -f docker-compose.docker-host.yml \
+  build --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up -d
+
+# Persisted via .env so plain `docker compose up` works:
+echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml' >> .env
+docker compose build --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+docker compose up -d
+```
+
+`gt-wizard init` also walks you through the choice and writes `COMPOSE_FILE` for you.
+
 ## How it's wired
 
-- `Dockerfile` installs `docker-ce-cli` and `docker-compose-plugin` from the official Docker apt repo, creates a `docker` group with a stable build-time GID (`DOCKER_GID`, default `988`), and adds the `gastown` user to it.
-- `docker-compose.yml` and `docker-compose.dev.yml` bind-mount `/var/run/docker.sock` from the host into the container at the same path.
-- `entrypoint.sh` calls `check_docker_access` at boot. It logs a confirmation when the daemon is reachable, or a warning with rebuild instructions when the in-container `docker` group GID doesn't match the host socket's GID.
+- `docker-compose.docker-host.yml` is the opt-in overlay. It sets `INSTALL_DOCKER=1` as a build arg and bind-mounts `/var/run/docker.sock` from the host into the container at the same path.
+- When `INSTALL_DOCKER=1`, the `Dockerfile` apt-installs `docker-ce-cli` and `docker-compose-plugin` from the official Docker apt repo, creates a `docker` group with a stable build-time GID (`DOCKER_GID`, default `988`), and adds the `gastown` user to it. When `INSTALL_DOCKER=0` (the default), none of those steps run — the image stays clean of docker tooling.
+- `entrypoint.sh` calls `check_docker_access` at boot. It logs a confirmation when the daemon is reachable, a quiet "skipping" line when the socket isn't mounted (you didn't enable the overlay), or a warning with rebuild instructions when the in-container `docker` group GID doesn't match the host socket's GID.
 
 ### GID mismatch
 
@@ -66,16 +86,17 @@ docker compose -f docker-compose.dev.yml exec gastown-dev bash -lc 'docker compo
 
 ## How to disable
 
-If you don't want the container talking to the host daemon, remove the socket bind mount from both compose files:
+This is the default state — you only need to act if you previously opted in.
 
-```yaml
-# Delete this block from docker-compose.yml AND docker-compose.dev.yml:
-- type: bind
-  source: /var/run/docker.sock
-  target: /var/run/docker.sock
-```
+1. Drop the overlay from your compose stack. If you set `COMPOSE_FILE=...` in `.env`, edit it to remove `docker-compose.docker-host.yml` (or unset `COMPOSE_FILE` entirely to fall back to the lightweight default).
+2. Rebuild without the overlay so the docker CLI is no longer baked in:
 
-Then `docker compose up -d --force-recreate`. Mayor falls back to handing the operator paste-able docker commands instead of running them itself. The CLI binary stays in the image (harmless without a socket to talk to), or you can also drop the `docker-ce-cli` install from the Dockerfile if image size matters.
+   ```bash
+   docker compose build
+   docker compose up -d --force-recreate
+   ```
+
+`INSTALL_DOCKER=0` (the new default) tells the Dockerfile to skip the docker CLI install and the in-container `docker` group, so the resulting image has no docker tooling at all. Mayor falls back to handing the operator paste-able docker commands instead of running them itself.
 
 ## Polecat inheritance
 

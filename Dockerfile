@@ -15,18 +15,30 @@ ARG BD_REPO=gastownhall/beads
 ARG GT_VERSION=0.12.0
 ARG CLAUDE_VERSION=2.1.117
 
-# Local voice transcription. WHISPER_REF pins whisper.cpp; the binary and
-# WHISPER_MODEL are baked into the runtime layer so cloners get voice
-# support out of the box without any additional setup.
+# Optional features — gated by overlay compose files so the default image
+# stays lightweight. Set to "1" to enable.
+#   INSTALL_VOICE   — bake in ffmpeg + whisper.cpp + a tiny English model
+#                     so gt-bot can transcribe Telegram voice messages
+#                     locally. Enabled by docker-compose.voice.yml.
+#   INSTALL_DOCKER  — install the docker CLI + compose plugin so processes
+#                     inside the container can drive a host-bound docker
+#                     socket. Enabled by docker-compose.docker-host.yml,
+#                     which also bind-mounts /var/run/docker.sock.
+ARG INSTALL_VOICE=0
+ARG INSTALL_DOCKER=0
+
+# Voice add-on: WHISPER_REF pins whisper.cpp and WHISPER_MODEL picks the
+# baked-in ggml model. Only consulted when INSTALL_VOICE=1.
 ARG WHISPER_REF=v1.7.5
 ARG WHISPER_MODEL=ggml-tiny.en.bin
 
-# GID for the in-container `docker` group. Must match the GID that owns
-# /var/run/docker.sock on the host or `docker` calls inside the container
-# will hit EACCES. 988 is the default Debian/Ubuntu assignment for the
-# docker package; pass `--build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)`
-# at build time if your host differs. The entrypoint logs a warning at
-# boot if the live socket GID doesn't match the group GID baked in here.
+# GID for the in-container `docker` group. Only used when INSTALL_DOCKER=1.
+# Must match the GID that owns /var/run/docker.sock on the host or `docker`
+# calls inside the container will hit EACCES. 988 is the default Debian/Ubuntu
+# assignment for the docker package; pass
+# `--build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)` at build time
+# if your host differs. The entrypoint logs a warning at boot if the live
+# socket GID doesn't match the group GID baked in here.
 ARG DOCKER_GID=988
 
 # Upstream repos vendored at build time (not git submodules).
@@ -56,10 +68,16 @@ RUN git clone --depth 1 --branch "${CROW_REF}" "${CROW_REPO}" crow \
     && rm -rf crow/.git
 
 # -----------------------------------------------------------------------------
-# Stage 1b — build whisper.cpp and download a voice model. Build artefacts
-# are copied into the runtime stage; the toolchain itself stays out of it.
+# Stage 1b — voice source. Two stages, selected at build time by INSTALL_VOICE
+# (`0` -> stub, `1` -> real). BuildKit only materializes the stage actually
+# referenced by the runtime, so the heavy whisper.cpp toolchain is pulled
+# only when the voice overlay is active. The runtime always COPYs from
+# `whisper-source`, which aliases to whichever stage INSTALL_VOICE picks.
 # -----------------------------------------------------------------------------
-FROM debian:${DEBIAN_VERSION}-slim AS whisper-builder
+
+# Real builder: clone whisper.cpp, build the CLI, fetch the model. Output is
+# packed into /artifacts/ so the runtime can copy a single tree.
+FROM debian:${DEBIAN_VERSION}-slim AS whisper-1
 ARG WHISPER_REF
 ARG WHISPER_MODEL
 
@@ -80,6 +98,25 @@ RUN git clone --depth 1 --branch "${WHISPER_REF}" https://github.com/ggerganov/w
     && cmake --build build -j --config Release --target whisper-cli \
     && bash ./models/download-ggml-model.sh "$(echo "${WHISPER_MODEL}" | sed -E 's/^ggml-(.+)\.bin$/\1/')"
 
+RUN set -eux; \
+    mkdir -p /artifacts/bin /artifacts/lib /artifacts/models; \
+    cp /build/whisper.cpp/build/bin/whisper-cli /artifacts/bin/; \
+    cp /build/whisper.cpp/build/src/libwhisper.so* /artifacts/lib/; \
+    cp /build/whisper.cpp/build/ggml/src/libggml*.so* /artifacts/lib/; \
+    cp "/build/whisper.cpp/models/${WHISPER_MODEL}" /artifacts/models/; \
+    : > /artifacts/.installed
+
+# Stub builder: produces an empty /artifacts/ marked with a sentinel file
+# so the runtime can detect "voice not installed" and skip the install step
+# without erroring on a missing COPY source.
+FROM debian:${DEBIAN_VERSION}-slim AS whisper-0
+RUN mkdir -p /artifacts && : > /artifacts/.skipped
+
+# Stage alias selected by INSTALL_VOICE. Must come AFTER both whisper-0 and
+# whisper-1 are declared so Docker can resolve the dynamic FROM.
+ARG INSTALL_VOICE
+FROM whisper-${INSTALL_VOICE} AS whisper-source
+
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime image. Node + Python + the Gas Town toolchain.
 # -----------------------------------------------------------------------------
@@ -92,6 +129,8 @@ ARG GT_VERSION
 ARG CLAUDE_VERSION
 ARG PYTHON_VERSION
 ARG DOCKER_GID
+ARG INSTALL_VOICE
+ARG INSTALL_DOCKER
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -102,11 +141,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/gastown/wizard:/usr/local/bin:${PATH}"
 
 # --- OS packages -----------------------------------------------------------
+# ffmpeg is omitted here; it ships only with the voice overlay (see the
+# whisper install block below) so the default image stays small.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        ffmpeg \
         git \
         gnupg \
         jq \
@@ -165,38 +205,54 @@ RUN set -eux; \
 RUN npm install -g "@gastown/gt@${GT_VERSION}" \
     && gt --version
 
-# --- whisper.cpp (local voice transcription) ------------------------------
-# Binary + model copied from the builder stage; ffmpeg comes from apt above.
+# --- voice add-on (whisper.cpp + ffmpeg) ----------------------------------
+# Pulled in only when INSTALL_VOICE=1 (set by docker-compose.voice.yml).
+# Artifacts come from `whisper-source`, which BuildKit resolves to either
+# whisper-1 (real) or whisper-0 (stub with /artifacts/.skipped marker).
 # WHISPER_MODEL is the filename only — the path is fixed at /opt/whisper/.
 ARG WHISPER_MODEL
-COPY --from=whisper-builder /build/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
-COPY --from=whisper-builder /build/whisper.cpp/models/${WHISPER_MODEL} /opt/whisper/models/${WHISPER_MODEL}
-# Whisper.cpp ships its libs alongside the binary; copy them into a path
-# the dynamic linker already searches so we don't have to set LD_LIBRARY_PATH.
-COPY --from=whisper-builder /build/whisper.cpp/build/src/libwhisper.so* /usr/local/lib/
-COPY --from=whisper-builder /build/whisper.cpp/build/ggml/src/libggml*.so* /usr/local/lib/
-RUN ldconfig && whisper-cli --help >/dev/null 2>&1 && echo "whisper-cli installed"
-
-# --- docker CLI ------------------------------------------------------------
-# Just the client + compose plugin; no daemon. The container talks to the
-# host's docker daemon over the bind-mounted /var/run/docker.sock (see
-# docker-compose.yml). This grants effective root-on-host to anyone in the
-# container, justified by branch protection on main + PR-only flow + the
-# operator already trusting the container with full GitHub PAT access.
-# See docs/docker-access.md for the full trust analysis.
+COPY --from=whisper-source /artifacts/ /tmp/whisper-artifacts/
 RUN set -eux; \
-    install -m 0755 -d /etc/apt/keyrings; \
-    curl -fsSL https://download.docker.com/linux/debian/gpg \
-        -o /etc/apt/keyrings/docker.asc; \
-    chmod a+r /etc/apt/keyrings/docker.asc; \
-    codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${codename} stable" \
-        > /etc/apt/sources.list.d/docker.list; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin; \
-    rm -rf /var/lib/apt/lists/*; \
-    docker --version; \
-    docker compose version
+    if [ -f /tmp/whisper-artifacts/.installed ]; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends ffmpeg; \
+        rm -rf /var/lib/apt/lists/*; \
+        cp /tmp/whisper-artifacts/bin/whisper-cli /usr/local/bin/; \
+        cp /tmp/whisper-artifacts/lib/libwhisper.so* /usr/local/lib/; \
+        cp /tmp/whisper-artifacts/lib/libggml*.so* /usr/local/lib/; \
+        mkdir -p /opt/whisper/models; \
+        cp "/tmp/whisper-artifacts/models/${WHISPER_MODEL}" /opt/whisper/models/; \
+        ldconfig; \
+        whisper-cli --help >/dev/null 2>&1; \
+        echo "voice install: whisper-cli + ffmpeg ready"; \
+    else \
+        echo "voice install skipped (INSTALL_VOICE=0); gt-bot will fall back to path-only delivery for Telegram voice messages"; \
+    fi; \
+    rm -rf /tmp/whisper-artifacts
+
+# --- docker CLI add-on ----------------------------------------------------
+# Pulled in only when INSTALL_DOCKER=1 (set by docker-compose.docker-host.yml,
+# which also bind-mounts the host /var/run/docker.sock). The CLI talks to the
+# host docker daemon over that socket — granting effective root-on-host to
+# anything inside the container. See docs/docker-access.md for the trust
+# analysis and how to disable.
+RUN set -eux; \
+    if [ "${INSTALL_DOCKER}" = "1" ]; then \
+        install -m 0755 -d /etc/apt/keyrings; \
+        curl -fsSL https://download.docker.com/linux/debian/gpg \
+            -o /etc/apt/keyrings/docker.asc; \
+        chmod a+r /etc/apt/keyrings/docker.asc; \
+        codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${codename} stable" \
+            > /etc/apt/sources.list.d/docker.list; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin; \
+        rm -rf /var/lib/apt/lists/*; \
+        docker --version; \
+        docker compose version; \
+    else \
+        echo "docker CLI install skipped (INSTALL_DOCKER=0); enable with the docker-compose.docker-host.yml overlay"; \
+    fi
 
 # --- non-root user ---------------------------------------------------------
 # All runtime work happens as `gastown` (uid 1000). Matches typical host uid
@@ -227,10 +283,12 @@ RUN set -eux; \
     else \
       useradd -m -u 1000 -g gastown -s /bin/bash gastown; \
     fi; \
-    if ! getent group docker >/dev/null 2>&1; then \
-      groupadd -g "${DOCKER_GID}" docker; \
+    if [ "${INSTALL_DOCKER}" = "1" ]; then \
+      if ! getent group docker >/dev/null 2>&1; then \
+        groupadd -g "${DOCKER_GID}" docker; \
+      fi; \
+      usermod -aG docker gastown; \
     fi; \
-    usermod -aG docker gastown; \
     mkdir -p /gastown/logs /gastown/repos /gastown/.dolt-data \
              /home/gastown/.claude /home/gastown/.config; \
     chown -R gastown:gastown /gastown /home/gastown

@@ -34,12 +34,26 @@ The two containers share `~/.claude` (your Claude auth) and `OPERATOR_TELEGRAM_C
 
 3. **DM the dev bot once** so Telegram links your operator chat ID to it. Send any message; the dev container's auto-detect will see it on first boot if `OPERATOR_TELEGRAM_CHAT_ID` isn't already in `.env` (it is, after prod onboarding — so this is just to teach Telegram which chat to deliver replies to).
 
+## Iterating on the voice / docker-host overlays in dev
+
+The prod overlay files (`docker-compose.docker-host.yml`, `docker-compose.voice.yml`) target the `gastown` service, not `gastown-dev`, so they don't stack onto `docker-compose.dev.yml` directly. To exercise those features in dev, pass the build args directly:
+
+```bash
+docker compose -f docker-compose.dev.yml build \
+    --build-arg INSTALL_VOICE=1 \
+    --build-arg INSTALL_DOCKER=1 \
+    --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+docker compose -f docker-compose.dev.yml up -d
+```
+
+To bind the host docker socket into dev too, edit `docker-compose.dev.yml` and add the bind under `volumes:` — same line as the prod overlay, just inlined into the dev file. (We deliberately don't ship a `docker-compose.dev.docker-host.yml` to avoid sprawl; dev is a one-developer feature flag, not a published surface.)
+
 ## Daily flow: iterate on dev, merge to prod
 
-The prod container has its own docker CLI and host socket access (see
-[docker-access.md](docker-access.md)), so Mayor can drive the rebuild loop
-itself once you ask it to. The commands below are the manual equivalents
-you'd otherwise run by hand.
+If you opted into the [`docker-compose.docker-host.yml`](docker-access.md)
+overlay for prod, Mayor can drive the rebuild loop itself once you ask it
+to. The commands below are the manual equivalents you'd otherwise run by
+hand — and the only path if you stuck with the lightweight default.
 
 ```bash
 # Start (or rebuild) dev. Prod keeps running untouched.
