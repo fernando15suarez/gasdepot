@@ -56,6 +56,44 @@ After onboarding completes:
 
 Your first move after install is to DM gt-bot on Telegram and ask Mayor to spawn your first rig. No example rig is pre-scaffolded — you create the work you care about.
 
+## Compose overlays — opting into heavier features
+
+The default install is intentionally lightweight: gt-bot Telegram bridge + Mayor + Dolt, with no docker-socket bind and no local voice transcription. Two overlays let you opt in:
+
+| Overlay | What it adds | Trust note |
+| --- | --- | --- |
+| `docker-compose.voice.yml` | Bakes ffmpeg + whisper.cpp into the image so gt-bot transcribes Telegram voice messages locally. ~150-200MB image growth. | None — model + binary stay inside the container. |
+| `docker-compose.docker-host.yml` | Installs the docker CLI inside the container and bind-mounts `/var/run/docker.sock`. Lets Mayor (and downstream user projects you build) drive the host docker daemon. | **Effective root-on-host.** Read [`docs/docker-access.md`](docs/docker-access.md) before enabling. Single-operator only. |
+
+Stack them with the standard `-f` flag (left-to-right merge — base file first):
+
+```bash
+# Default (lightweight)
+docker compose up -d
+
+# Add voice
+docker compose -f docker-compose.yml -f docker-compose.voice.yml up -d
+
+# Add docker-host access (and pin the host's docker GID so the bind mount works)
+docker compose -f docker-compose.yml -f docker-compose.docker-host.yml \
+  build --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up -d
+
+# Both
+docker compose -f docker-compose.yml \
+  -f docker-compose.docker-host.yml \
+  -f docker-compose.voice.yml up -d
+```
+
+To make plain `docker compose up` use the same overlays without the `-f` flags every time, set `COMPOSE_FILE` in `.env`:
+
+```bash
+# .env — colon-separated, base file first
+COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml:docker-compose.voice.yml
+```
+
+`gt-wizard init` walks you through these choices and writes `COMPOSE_FILE` for you.
+
 ## Updating
 
 Fernando ships new tools and wizard improvements on the `main` branch. To pull them into your running setup:
