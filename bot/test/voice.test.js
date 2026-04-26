@@ -20,15 +20,29 @@ const FAKES = path.join(__dirname, "fakes");
 const GT = makeGtLog();
 const INBOX = fs.mkdtempSync(path.join(os.tmpdir(), "gt-bot-voice-inbox-"));
 
+// Pre-create a fake model file so the existing handleTelegramMedia tests
+// hit the fast path (model present → no lazy download). The lazy-download
+// tests below override WHISPER_MODEL per-test to point at a missing path.
+const MODEL_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "gt-bot-voice-model-"));
+const PRESENT_MODEL = path.join(MODEL_DIR, "ggml-tiny.en.bin");
+fs.writeFileSync(PRESENT_MODEL, "fake-model-bytes");
+
 process.env.PATH = `${FAKES}:${process.env.PATH || ""}`;
 process.env.GT_FAKE_LOG = GT.log;
 process.env.GT_BOT_INBOX_DIR = INBOX;
 process.env.GT_TOWN_ROOT = "/tmp";
+process.env.WHISPER_MODEL = PRESENT_MODEL;
 
 installFakeFetch();
 
 const { __test } = require("../bot");
-const { handleTelegramMedia, transcribeVoice, setPerms } = __test;
+const {
+  handleTelegramMedia,
+  transcribeVoice,
+  ensureWhisperModel,
+  resetWhisperModelDownload,
+  setPerms,
+} = __test;
 
 function voiceCtx({ chatId, bytes = Buffer.from("opus-bytes"), caption = null } = {}) {
   return makeCtx({
@@ -204,5 +218,159 @@ test("handleTelegramMedia: no echo when transcription fails (silent fallback)", 
   } finally {
     if (prev === undefined) delete process.env.WHISPER_BIN;
     else process.env.WHISPER_BIN = prev;
+  }
+});
+
+// --- ensureWhisperModel: lazy-download paths ---------------------------
+//
+// The model is ~75 MB and most installs may never receive a voice DM,
+// so the Dockerfile keeps it out of the image. ensureWhisperModel pulls
+// it on first voice DM (with operator notice + single-flight) and skips
+// on subsequent voice DMs. Three paths are covered:
+//   (1) missing model → notice fires before download → model on disk
+//   (2) model already present → no notice, no download
+//   (3) concurrent first-voices → exactly one download, one notice
+
+function withMissingModelEnv(fn) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gt-bot-lazy-"));
+  const missingModelPath = path.join(tmpDir, "ggml-tiny.en.bin");
+  const prevModel = process.env.WHISPER_MODEL;
+  process.env.WHISPER_MODEL = missingModelPath;
+  resetWhisperModelDownload();
+  return {
+    missingModelPath,
+    cleanup() {
+      process.env.WHISPER_MODEL = prevModel;
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      resetWhisperModelDownload();
+    },
+  };
+}
+
+function stubModelFetch({ delayMs = 0, bytes = Buffer.from("fake-whisper-model") } = {}) {
+  const orig = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    if (typeof url === "string" && url.includes("huggingface.co")) {
+      calls.push(url);
+      if (delayMs) await new Promise(r => setTimeout(r, delayMs));
+      return {
+        ok: true,
+        status: 200,
+        async arrayBuffer() {
+          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        },
+      };
+    }
+    return orig(url);
+  };
+  return {
+    calls,
+    restore() { globalThis.fetch = orig; },
+  };
+}
+
+test("ensureWhisperModel: missing model → notice fires before download, model lands on disk", async () => {
+  const env = withMissingModelEnv();
+  const stub = stubModelFetch();
+  try {
+    const ctx = { replies: [], async reply(t) { this.replies.push(t); } };
+    const ok = await ensureWhisperModel(ctx);
+    assert.equal(ok, true);
+    assert.equal(fs.existsSync(env.missingModelPath), true, "model should be on disk");
+    assert.equal(stub.calls.length, 1, "one HF download call");
+    assert.match(stub.calls[0], /ggml-tiny\.en\.bin$/);
+    const notice = ctx.replies.find(r => r.includes("First voice on this install"));
+    assert.ok(notice, "expected the lazy-download notice ctx.reply");
+    assert.match(notice, /~75 MB/);
+  } finally {
+    stub.restore();
+    env.cleanup();
+  }
+});
+
+test("ensureWhisperModel: present model → no notice, no download", async () => {
+  // Default WHISPER_MODEL points at PRESENT_MODEL (set at module load).
+  resetWhisperModelDownload();
+  const stub = stubModelFetch();
+  try {
+    const ctx = { replies: [], async reply(t) { this.replies.push(t); } };
+    const ok = await ensureWhisperModel(ctx);
+    assert.equal(ok, true);
+    assert.equal(stub.calls.length, 0, "should not download when model present");
+    assert.equal(ctx.replies.length, 0, "should not notify when model present");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("ensureWhisperModel: concurrent first-voices single-flight (one download, one notice)", async () => {
+  const env = withMissingModelEnv();
+  const stub = stubModelFetch({ delayMs: 50 });
+  try {
+    const ctx1 = { replies: [], async reply(t) { this.replies.push(t); } };
+    const ctx2 = { replies: [], async reply(t) { this.replies.push(t); } };
+    // Fire concurrently — both find the model missing and would each try
+    // to download without single-flight gating.
+    const [r1, r2] = await Promise.all([
+      ensureWhisperModel(ctx1),
+      ensureWhisperModel(ctx2),
+    ]);
+    assert.equal(r1, true);
+    assert.equal(r2, true);
+    assert.equal(stub.calls.length, 1, "exactly one download under concurrent calls");
+    const totalNotices = ctx1.replies.length + ctx2.replies.length;
+    assert.equal(totalNotices, 1, "exactly one operator notice across both ctxs");
+  } finally {
+    stub.restore();
+    env.cleanup();
+  }
+});
+
+test("ensureWhisperModel: download failure returns false (caller falls back)", async () => {
+  const env = withMissingModelEnv();
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (typeof url === "string" && url.includes("huggingface.co")) {
+      return { ok: false, status: 503, async arrayBuffer() { return new ArrayBuffer(0); } };
+    }
+    return orig(url);
+  };
+  try {
+    const ctx = { replies: [], async reply(t) { this.replies.push(t); } };
+    const ok = await ensureWhisperModel(ctx);
+    assert.equal(ok, false, "download failure should return false");
+    assert.equal(fs.existsSync(env.missingModelPath), false, "no model file on failure");
+  } finally {
+    globalThis.fetch = orig;
+    env.cleanup();
+  }
+});
+
+test("handleTelegramMedia: voice on missing model → notice → download → transcribe", async () => {
+  const env = withMissingModelEnv();
+  const stub = stubModelFetch();
+  setPerms({ "300": { role: "admin", rigs: ["*"] } });
+  fs.writeFileSync(GT.log, "");
+  process.env.WHISPER_FAKE_OUTPUT = "first voice on this install";
+  try {
+    const ctx = voiceCtx({ chatId: 300 });
+    setActiveFakeFetchCtx(ctx);
+    await handleTelegramMedia(ctx);
+    // Notice fired before transcript echo (download happened in between).
+    const noticeIdx = ctx.replies.findIndex(r => r.includes("First voice on this install"));
+    const echoIdx = ctx.replies.findIndex(r => r.includes("Heard:"));
+    assert.ok(noticeIdx >= 0, "expected lazy-download notice");
+    assert.ok(echoIdx >= 0, "expected transcript echo");
+    assert.ok(noticeIdx < echoIdx, "notice must fire before transcript echo");
+    // Model now on disk; the mail body has the transcript.
+    assert.equal(fs.existsSync(env.missingModelPath), true);
+    const log = readGtLog(GT.log);
+    const stdin = log.find(e => e.kind === "stdin");
+    assert.ok(stdin && stdin.body.includes("first voice on this install"));
+  } finally {
+    delete process.env.WHISPER_FAKE_OUTPUT;
+    stub.restore();
+    env.cleanup();
   }
 });
