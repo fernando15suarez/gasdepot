@@ -62,7 +62,7 @@ The default install is intentionally lightweight: gt-bot Telegram bridge + Mayor
 
 | Overlay | What it adds | Trust note |
 | --- | --- | --- |
-| `docker-compose.voice.yml` | Bakes ffmpeg + whisper.cpp into the image so gt-bot transcribes Telegram voice messages locally. ~150-200MB image growth. | None — model + binary stay inside the container. |
+| `docker-compose.voice.yml` | Bakes ffmpeg + whisper.cpp into the image so gt-bot transcribes Telegram voice messages locally. ~80-130MB image growth; the ~75MB ggml model is lazy-downloaded by gt-bot on first voice DM (cached on a persisted volume). | None — model + binary stay inside the container. |
 | `docker-compose.docker-host.yml` | Installs the docker CLI inside the container and bind-mounts `/var/run/docker.sock`. Lets Mayor (and downstream user projects you build) drive the host docker daemon. | **Effective root-on-host.** Read [`docs/docker-access.md`](docs/docker-access.md) before enabling. Single-operator only. |
 
 Stack them with the standard `-f` flag (left-to-right merge — base file first):

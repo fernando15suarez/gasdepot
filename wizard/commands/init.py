@@ -130,8 +130,9 @@ def _collect_overlays(env: EnvFile, non_interactive: bool) -> None:
 
     ui.info(
         "Voice transcription bakes ffmpeg + whisper.cpp into the image so "
-        "gt-bot transcribes Telegram voice messages locally. ~150-200MB "
-        "image growth and ~1-2 min extra build time."
+        "gt-bot transcribes Telegram voice messages locally. ~80-130MB "
+        "image growth and ~1-2 min extra build time. The ~75MB ggml model "
+        "is lazy-downloaded by gt-bot on the first voice DM."
     )
     want_voice = ui.confirm("Enable voice transcription?", default=has_voice)
 
