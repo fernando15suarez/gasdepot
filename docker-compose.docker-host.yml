@@ -1,0 +1,49 @@
+# Gas Town Starter Kit — host-docker access overlay (OPT-IN).
+#
+# !! TRUST EXPANSION !!
+# Activating this overlay grants effective root-on-host to anything inside
+# the container. The container can spin up a `--privileged` peer with `-v
+# /:/host` and chroot into your host filesystem. This is acceptable for the
+# single-operator starter-kit posture — the container already holds your
+# Claude auth, GitHub PAT, and .env secrets — but is NOT acceptable for
+# multi-tenant or shared hosts. See docs/docker-access.md for the full trust
+# analysis and how to disable.
+#
+# Usage:
+#
+#   # One-off (rebuild the image with the docker CLI baked in):
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up -d
+#
+#   # Persisted via .env (so plain `docker compose up` does the right thing):
+#   echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml' >> .env
+#
+# DOCKER_GID:
+#   The host's docker group GID is whatever your host's package manager
+#   assigned (988 on most current Debian/Ubuntu, but can be 999+). If the
+#   in-container `docker` group GID doesn't match the host socket GID,
+#   `docker` calls inside the container hit EACCES. The entrypoint logs a
+#   warning at boot with the exact rebuild command. Capture it once and pin:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml \
+#     build --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+
+services:
+  gastown:
+    build:
+      args:
+        # Tells the Dockerfile to apt-install docker-ce-cli + docker-compose-
+        # plugin and add the gastown user to the in-container docker group.
+        INSTALL_DOCKER: "1"
+        # Pass the host's docker group GID so the in-container group matches
+        # the bind-mounted socket. Override at build time on hosts where
+        # /var/run/docker.sock isn't owned by GID 988.
+        DOCKER_GID: "${DOCKER_GID:-988}"
+
+    volumes:
+      # Host docker socket — what makes `docker compose` inside the
+      # container actually drive the host daemon. Without this bind the
+      # CLI install is inert.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock

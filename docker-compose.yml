@@ -1,4 +1,27 @@
-# Gas Town Starter Kit — single-service compose.
+# Gas Town Starter Kit — single-service compose (lightweight default).
+#
+# This is the lightest-weight gasdepot stack: gt-bot Telegram bridge + Mayor +
+# Dolt, with no docker-socket bind and no local voice transcription. Anything
+# heavier is opt-in via overlays:
+#
+#   docker-compose.docker-host.yml  — bind /var/run/docker.sock + install the
+#                                     docker CLI inside the container so Mayor
+#                                     (and downstream user projects) can drive
+#                                     the host docker daemon. Effective root
+#                                     on host; see docs/docker-access.md.
+#   docker-compose.voice.yml        — bake ffmpeg + whisper.cpp into the image
+#                                     so gt-bot transcribes Telegram voice
+#                                     messages locally instead of forwarding
+#                                     them as path-only attachments.
+#
+# Stack overlays with the standard `-f` flag:
+#
+#   docker compose up                                                    # default
+#   docker compose -f docker-compose.yml -f docker-compose.voice.yml up  # + voice
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml -f docker-compose.voice.yml up
+#
+# `gt-wizard init` writes a COMPOSE_FILE=...:... line into .env so plain
+# `docker compose up` picks the chosen overlays automatically.
 #
 # Why single-service:
 #   - Starter kit audience is "friends new to AI tooling". One process to reason
@@ -21,6 +44,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Explicit "no opt-ins" defaults. Overlays flip these to "1".
+      args:
+        INSTALL_VOICE: "0"
+        INSTALL_DOCKER: "0"
     image: gastown-starter:latest
     container_name: gastown
     hostname: gastown
@@ -30,6 +57,16 @@ services:
 
     env_file:
       - .env
+
+    # Export the host paths Mayor needs to drive docker-compose.dev.yml from
+    # inside this container. The daemon resolves bind sources against the
+    # HOST filesystem, so Mayor's in-container `./` and `$HOME` would miss.
+    # docker-compose.dev.yml reads these via ${GASTOWN_HOST_*:-fallback}.
+    # Operators running compose from the host shell never see these vars
+    # and the fallbacks keep the same behavior they had before.
+    environment:
+      GASTOWN_HOST_CLAUDE: ${HOME}/.claude
+      GASTOWN_HOST_ENV: ./.env
 
     # daemon mode runs the full boot sequence (Dolt → HQ install → gt-bot →
     # Mayor). The Dockerfile's CMD defaults to this too; setting it here
@@ -47,29 +84,26 @@ services:
 
     volumes:
       # Claude credentials — passthrough from host. Read-write so the agent
-      # inside the container can refresh tokens.
+      # inside the container can refresh tokens. Source is GASTOWN_HOST_*
+      # driven so this compose also works when invoked from inside Mayor
+      # (rare for prod but kept symmetric with docker-compose.dev.yml).
       - type: bind
-        source: ${HOME}/.claude
+        source: ${GASTOWN_HOST_CLAUDE:-${HOME}/.claude}
         target: /home/gastown/.claude
 
       # Per-stack data that must survive rebuilds. Declared below.
       - gastown-dolt-data:/gastown/.dolt-data
       - gastown-repos:/gastown/repos
       - gastown-logs:/gastown/logs
+      # Whisper model cache. Lazy-downloaded on first voice DM (see
+      # bot/bot.js). Persisting it means the ~75 MB download is one-time
+      # per install, not one-time per `docker compose up --build`.
+      - gastown-whisper-models:/opt/whisper/models
 
       # Starter-kit `.env` lives on the host so users edit it there.
       - type: bind
-        source: ./.env
+        source: ${GASTOWN_HOST_ENV:-./.env}
         target: /gastown/.env
-
-      # Host docker socket — lets Mayor drive `docker compose` against the
-      # operator's host daemon (e.g. spin up a dev container for PR testing
-      # without paste-and-run from the operator). This grants effective
-      # root-on-host inside the container; see docs/docker-access.md for the
-      # full trust analysis and how to disable.
-      - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
 
     # Keep the wizard interactive when users `docker compose run` or
     # `docker compose exec`. The default `up -d` path uses the `daemon` entry
@@ -85,3 +119,4 @@ volumes:
   gastown-dolt-data:
   gastown-repos:
   gastown-logs:
+  gastown-whisper-models:
