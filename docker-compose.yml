@@ -56,6 +56,10 @@ services:
       - gastown-dolt-data:/gastown/.dolt-data
       - gastown-repos:/gastown/repos
       - gastown-logs:/gastown/logs
+      # Whisper model cache. Lazy-downloaded on first voice DM (see
+      # bot/bot.js). Persisting it means the ~75 MB download is one-time
+      # per install, not one-time per `docker compose up --build`.
+      - gastown-whisper-models:/opt/whisper/models
 
       # Starter-kit `.env` lives on the host so users edit it there.
       - type: bind
@@ -85,3 +89,4 @@ volumes:
   gastown-dolt-data:
   gastown-repos:
   gastown-logs:
+  gastown-whisper-models:
