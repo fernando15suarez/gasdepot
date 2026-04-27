@@ -70,15 +70,70 @@ CHAT_ID='<id>' && \
 
 Tell the user: *"Got it. Your operator chat id is `<id>`. Building the container now."*
 
-### 3. Build the image
+### 3. Optional features prompt
+
+Before building, ask the user if they want any opt-in features. Only the
+rigs dashboard exists today; phrase the prompt so the default is OFF.
+
+Print this verbatim, including the explicit `y/N` (default no):
+
+> Optional features (any can be enabled later by editing `docker-compose.yml`):
+>
+>   rigs-dashboard — read-only webpage at http://localhost:3338 showing what
+>   your rigs/agents/beads are doing. Useful for "is Mayor bricked?" at a
+>   glance. Adds one extra container; otherwise inert.
+>
+> Enable rigs-dashboard? \[y/N\] (default: no)
+
+Treat any response that is NOT one of `y`, `Y`, `yes`, or `YES` as no — including
+empty input, `n`, `no`, or anything ambiguous. Do NOT assume yes from silence.
+
+**If the user says yes:**
+
+1. Generate a 32-char random token (no echoing it back unmasked):
+   ```bash
+   TOKEN="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+   grep -q '^DASHBOARD_AUTH_TOKEN=' .env \
+     && sed -i "s|^DASHBOARD_AUTH_TOKEN=.*|DASHBOARD_AUTH_TOKEN=${TOKEN}|" .env \
+     || echo "DASHBOARD_AUTH_TOKEN=${TOKEN}" >> .env
+   ```
+2. Append `dashboard` to `COMPOSE_PROFILES` in `.env` (preserve any other
+   profiles already set):
+   ```bash
+   if grep -q '^COMPOSE_PROFILES=' .env; then
+     # Append only if not already present.
+     grep -q '^COMPOSE_PROFILES=.*\bdashboard\b' .env \
+       || sed -i 's|^COMPOSE_PROFILES=\(.*\)|COMPOSE_PROFILES=\1,dashboard|' .env
+   else
+     echo 'COMPOSE_PROFILES=dashboard' >> .env
+   fi
+   ```
+3. Tell the user the URL and token: *"Dashboard will come up at
+   http://localhost:3338?token=`<token>`. The token is in your `.env` as
+   `DASHBOARD_AUTH_TOKEN`."*
+
+**If the user says no:** do nothing. The compose service is profile-gated, so
+it stays inert. Tell them: *"Skipping. You can flip this on later by setting
+`COMPOSE_PROFILES=dashboard` in `.env` and running `docker compose up -d`."*
+
+### 4. Build the image
 
 Run `docker compose build`. This takes 3–8 minutes on a first build; show the user the progress stream. If the build fails, read the tail of the output and tell the user what broke — do not barrel on to the next step.
 
-### 4. Bring up the stack
+If the user opted into the dashboard in step 3, also build the dashboard image:
+```bash
+docker compose --profile dashboard build rigs-dashboard
+```
+
+### 5. Bring up the stack
 
 Run `docker compose up -d`. Default CMD is `daemon`, which starts Dolt → configures Dolt identity → installs the HQ → starts gt-bot → launches Deacon + Mayor. `OPERATOR_TELEGRAM_CHAT_ID` is already in `.env` from step 2c, so the entrypoint seeds the bot's admin row on first boot.
 
-### 5. Wait for Mayor to come up
+If the user opted into the dashboard in step 3, the dashboard container comes
+up alongside `gastown` automatically (the `COMPOSE_PROFILES=dashboard` line
+in `.env` activates the profile).
+
+### 6. Wait for Mayor to come up
 
 Tail the logs and watch for the boot milestones. One easy way:
 ```bash
@@ -92,11 +147,18 @@ docker compose logs --tail=200 gastown
 ```
 Look for errors from `ensure_hq`, `start_gt_bot`, or `start_mayor`. Common culprits: stale Dolt volume (nuke with `docker compose down -v` then rebuild), dolt identity not configured (should be handled by `ensure_dolt_identity`, but check), or port 3307 conflict on the host.
 
-### 6. Verify
+### 7. Verify
 
 Run `docker compose exec gastown gt-wizard verify`. Read each ✓ and ✗ aloud. All REQUIRED checks must be green — including HQ present, Mayor session, and the end-to-end `gt mail send` round-trip. If anything is red, do not declare success. Investigate it.
 
-### 7. End-to-end confirmation
+If the user opted into the dashboard, also probe it:
+```bash
+curl -fsS http://localhost:3338/healthz
+```
+That should return `ok`. If it doesn't, run `docker compose ps rigs-dashboard`
+and `docker compose logs --tail=80 rigs-dashboard` to diagnose.
+
+### 8. End-to-end confirmation
 
 This is the other place you stop for the user.
 
@@ -118,6 +180,7 @@ Once Mayor has round-tripped a message, share:
 - **Send follow-ups on Telegram.** The bot forwards every authorized message to Mayor.
 - **Inspect the state.** `docker compose exec gastown gt agents` lists live sessions. `docker compose exec gastown gt dolt status` shows the data plane.
 - **Open a shell.** `docker compose exec gastown bash` drops into the container as the `gastown` user.
+- **Dashboard (if opted in).** Open `http://localhost:3338?token=<token>`; it shows a live read-only view of rigs, agents, and beads.
 - **Next: build a rig.** Suggest "ask Mayor on Telegram to create a rig for <project>". No example rig is pre-scaffolded.
 
 ## Common snags (diagnose, do not delegate)
