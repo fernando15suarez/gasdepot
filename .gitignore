@@ -4,3 +4,6 @@
 *.db
 .beads-credential-key
 __pycache__/
+
+# Local node_modules from the dashboard image build context
+dashboard/node_modules/
