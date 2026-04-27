@@ -106,9 +106,30 @@ function gtAvailable() {
 // path from GT_TOWN_ROOT (the same env var `gt install --shell` sets) and
 // pass it to every subprocess as both cwd and an explicit env var so gt
 // finds it regardless of which resolution path it takes internally.
+//
+// Claude Code agent shells inject GIT_CEILING_DIRECTORIES (and a few other
+// GIT_* vars) to sandbox git traversal. If gt-bot is restarted from inside
+// such a shell, those vars leak into our subprocess env. `gt mail send`
+// shells out to `git config beads.role`, which then can't find the repo
+// (the ceiling points at HQ root, which is not itself a git repo) and
+// fails with `warning: beads.role not configured` followed by a delivery
+// failure. Strip them so subprocess git invocations behave as if launched
+// from a clean shell.
+const STRIPPED_GIT_VARS = [
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+  "GIT_EDITOR",
+];
+
 function gtEnv(extra = {}) {
   const townRoot = process.env.GT_TOWN_ROOT;
   const env = { ...process.env, ...extra };
+  for (const name of STRIPPED_GIT_VARS) delete env[name];
   if (townRoot) env.GT_TOWN_ROOT = townRoot;
   return {
     cwd: townRoot || process.cwd(),
@@ -422,7 +443,13 @@ async function handleTelegramText(ctx) {
   try {
     await gtMailSend("mayor/", subject, body);
   } catch (err) {
-    console.error("gt mail send failed:", err.message);
+    console.error("gt mail send failed:", {
+      message: err.message,
+      code: err.code,
+      exitCode: typeof err.code === "number" ? err.code : undefined,
+      stdout: err.stdout,
+      stderr: err.stderr,
+    });
     try { await ctx.reply("Failed to deliver message to Gas Town."); } catch {}
     return;
   }
@@ -891,6 +918,9 @@ module.exports = {
     handleTelegramText,
     handleSend,
     setPerms: (p) => { perms = p; },
+    // Subprocess env shaping
+    gtEnv,
+    STRIPPED_GIT_VARS,
   },
 };
 
