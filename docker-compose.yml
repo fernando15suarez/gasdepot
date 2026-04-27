@@ -31,6 +31,16 @@ services:
     env_file:
       - .env
 
+    # Export the host paths Mayor needs to drive docker-compose.dev.yml from
+    # inside this container. The daemon resolves bind sources against the
+    # HOST filesystem, so Mayor's in-container `./` and `$HOME` would miss.
+    # docker-compose.dev.yml reads these via ${GASTOWN_HOST_*:-fallback}.
+    # Operators running compose from the host shell never see these vars
+    # and the fallbacks keep the same behavior they had before.
+    environment:
+      GASTOWN_HOST_CLAUDE: ${HOME}/.claude
+      GASTOWN_HOST_ENV: ./.env
+
     # daemon mode runs the full boot sequence (Dolt → HQ install → gt-bot →
     # Mayor). The Dockerfile's CMD defaults to this too; setting it here
     # makes the behavior explicit for anyone reading just the compose file.
@@ -47,9 +57,11 @@ services:
 
     volumes:
       # Claude credentials — passthrough from host. Read-write so the agent
-      # inside the container can refresh tokens.
+      # inside the container can refresh tokens. Source is GASTOWN_HOST_*
+      # driven so this compose also works when invoked from inside Mayor
+      # (rare for prod but kept symmetric with docker-compose.dev.yml).
       - type: bind
-        source: ${HOME}/.claude
+        source: ${GASTOWN_HOST_CLAUDE:-${HOME}/.claude}
         target: /home/gastown/.claude
 
       # Per-stack data that must survive rebuilds. Declared below.
@@ -59,7 +71,7 @@ services:
 
       # Starter-kit `.env` lives on the host so users edit it there.
       - type: bind
-        source: ./.env
+        source: ${GASTOWN_HOST_ENV:-./.env}
         target: /gastown/.env
 
       # Host docker socket — lets Mayor drive `docker compose` against the

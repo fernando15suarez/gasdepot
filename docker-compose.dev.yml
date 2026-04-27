@@ -55,9 +55,18 @@ services:
       - "3309:3307"
       - "3336:3335"
 
+    # Bind sources go through GASTOWN_HOST_* env vars so this compose works
+    # from the operator's host shell AND from inside Mayor (the prod
+    # container) driving docker against the host daemon. The daemon resolves
+    # bind sources against the HOST filesystem regardless of where compose
+    # runs, so when Mayor invokes us its own in-container paths (`./` =
+    # /gastown/repos/hq/..., $HOME = /home/gastown) would point at nothing.
+    # Prod compose exports GASTOWN_HOST_CLAUDE / GASTOWN_HOST_ENV with the
+    # real host paths so Mayor inherits them. From the host shell those
+    # vars are unset and the `:-fallback` keeps the original behavior.
     volumes:
       - type: bind
-        source: ${HOME}/.claude
+        source: ${GASTOWN_HOST_CLAUDE:-${HOME}/.claude}
         target: /home/gastown/.claude
 
       # Dev gets its OWN named volumes — no sharing with prod.
@@ -66,7 +75,7 @@ services:
       - gastown-dev-logs:/gastown/logs
 
       - type: bind
-        source: ./.env
+        source: ${GASTOWN_HOST_ENV:-./.env}
         target: /gastown/.env
 
       # Same docker socket mount as prod. Both containers share host-daemon
