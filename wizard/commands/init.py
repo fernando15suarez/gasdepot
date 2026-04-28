@@ -102,39 +102,29 @@ def _collect_git_identity(env: EnvFile, non_interactive: bool) -> None:
 
 # Overlay compose files. Selected entries are joined with `:` (the docker
 # compose convention) and written to .env as COMPOSE_FILE so that plain
-# `docker compose up` picks the chosen overlays automatically.
+# `docker compose up` picks the chosen overlay automatically.
 _BASE_COMPOSE = "docker-compose.yml"
-_VOICE_OVERLAY = "docker-compose.voice.yml"
 _DOCKER_HOST_OVERLAY = "docker-compose.docker-host.yml"
 
 
 def _collect_overlays(env: EnvFile, non_interactive: bool) -> None:
     ui.header("Optional features")
     ui.info(
-        "The default install is lightweight: gt-bot Telegram bridge + Mayor + "
-        "Dolt, no docker-socket bind, no local voice transcription. "
-        "Two overlays are available — both default to off."
+        "The default install boots gt-bot Telegram bridge + Mayor + Dolt "
+        "with local voice transcription baked in. The only opt-in is "
+        "host docker access (defaults to off)."
     )
 
     existing = env.get("COMPOSE_FILE") or ""
     parts = [p for p in existing.split(":") if p]
-    has_voice = _VOICE_OVERLAY in parts
     has_docker_host = _DOCKER_HOST_OVERLAY in parts
 
     if non_interactive:
         if existing:
             ui.success(f"COMPOSE_FILE already set: {existing} — leaving unchanged.")
         else:
-            ui.info("COMPOSE_FILE not set — defaulting to lightweight (no overlays).")
+            ui.info("COMPOSE_FILE not set — defaulting to no overlays.")
         return
-
-    ui.info(
-        "Voice transcription bakes ffmpeg + whisper.cpp into the image so "
-        "gt-bot transcribes Telegram voice messages locally. ~80-130MB "
-        "image growth and ~1-2 min extra build time. The ~75MB ggml model "
-        "is lazy-downloaded by gt-bot on the first voice DM."
-    )
-    want_voice = ui.confirm("Enable voice transcription?", default=has_voice)
 
     ui.info(
         "Docker-host access bind-mounts /var/run/docker.sock into the "
@@ -147,17 +137,15 @@ def _collect_overlays(env: EnvFile, non_interactive: bool) -> None:
     overlays = [_BASE_COMPOSE]
     if want_docker_host:
         overlays.append(_DOCKER_HOST_OVERLAY)
-    if want_voice:
-        overlays.append(_VOICE_OVERLAY)
 
     if len(overlays) == 1:
         # No overlays chosen. Drop COMPOSE_FILE entirely if it's set so
         # `docker compose up` falls through to the default file lookup.
         if existing:
             env.set("COMPOSE_FILE", "")
-            ui.success("COMPOSE_FILE cleared — using lightweight default.")
+            ui.success("COMPOSE_FILE cleared — using default (no overlays).")
         else:
-            ui.success("Using lightweight default (no overlays).")
+            ui.success("Using default (no overlays).")
         return
 
     new_value = ":".join(overlays)
@@ -168,7 +156,7 @@ def _collect_overlays(env: EnvFile, non_interactive: bool) -> None:
     env.set("COMPOSE_FILE", new_value)
     ui.success(f"COMPOSE_FILE set to: {new_value}")
     ui.info(
-        "Rebuild and restart the stack to pick up the new overlays:\n"
+        "Rebuild and restart the stack to pick up the new overlay:\n"
         "    docker compose build\n"
         "    docker compose up -d"
     )

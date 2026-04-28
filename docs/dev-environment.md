@@ -34,13 +34,12 @@ The two containers share `~/.claude` (your Claude auth) and `OPERATOR_TELEGRAM_C
 
 3. **DM the dev bot once** so Telegram links your operator chat ID to it. Send any message; the dev container's auto-detect will see it on first boot if `OPERATOR_TELEGRAM_CHAT_ID` isn't already in `.env` (it is, after prod onboarding — so this is just to teach Telegram which chat to deliver replies to).
 
-## Iterating on the voice / docker-host overlays in dev
+## Iterating on the docker-host overlay in dev
 
-The prod overlay files (`docker-compose.docker-host.yml`, `docker-compose.voice.yml`) target the `gastown` service, not `gastown-dev`, so they don't stack onto `docker-compose.dev.yml` directly. To exercise those features in dev, pass the build args directly:
+The prod overlay file (`docker-compose.docker-host.yml`) targets the `gastown` service, not `gastown-dev`, so it doesn't stack onto `docker-compose.dev.yml` directly. To exercise docker-host access in dev, pass the build args directly:
 
 ```bash
 docker compose -f docker-compose.dev.yml build \
-    --build-arg INSTALL_VOICE=1 \
     --build-arg INSTALL_DOCKER=1 \
     --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
 docker compose -f docker-compose.dev.yml up -d
