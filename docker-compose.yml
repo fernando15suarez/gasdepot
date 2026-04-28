@@ -1,27 +1,22 @@
-# Gas Town Starter Kit — single-service compose (lightweight default).
+# Gas Town Starter Kit — single-service compose.
 #
-# This is the lightest-weight gasdepot stack: gt-bot Telegram bridge + Mayor +
-# Dolt, with no docker-socket bind and no local voice transcription. Anything
-# heavier is opt-in via overlays:
+# Default stack: gt-bot Telegram bridge + Mayor + Dolt, with local voice
+# transcription baked in (ffmpeg + whisper.cpp; only the ~75 MB ggml model
+# lazy-downloads on first voice DM). One opt-in overlay is available:
 #
 #   docker-compose.docker-host.yml  — bind /var/run/docker.sock + install the
 #                                     docker CLI inside the container so Mayor
 #                                     (and downstream user projects) can drive
 #                                     the host docker daemon. Effective root
 #                                     on host; see docs/docker-access.md.
-#   docker-compose.voice.yml        — bake ffmpeg + whisper.cpp into the image
-#                                     so gt-bot transcribes Telegram voice
-#                                     messages locally instead of forwarding
-#                                     them as path-only attachments.
 #
-# Stack overlays with the standard `-f` flag:
+# Stack the overlay with the standard `-f` flag:
 #
-#   docker compose up                                                    # default
-#   docker compose -f docker-compose.yml -f docker-compose.voice.yml up  # + voice
-#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml -f docker-compose.voice.yml up
+#   docker compose up                                                          # default
+#   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml up  # + docker-host
 #
 # `gt-wizard init` writes a COMPOSE_FILE=...:... line into .env so plain
-# `docker compose up` picks the chosen overlays automatically.
+# `docker compose up` picks the chosen overlay automatically.
 #
 # Why single-service:
 #   - Starter kit audience is "friends new to AI tooling". One process to reason
@@ -44,9 +39,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # Explicit "no opt-ins" defaults. Overlays flip these to "1".
+      # Explicit "no opt-ins" default. The docker-host overlay flips this to "1".
       args:
-        INSTALL_VOICE: "0"
         INSTALL_DOCKER: "0"
     image: gastown-starter:latest
     container_name: gastown

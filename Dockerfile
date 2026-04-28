@@ -15,25 +15,19 @@ ARG BD_REPO=gastownhall/beads
 ARG GT_VERSION=0.12.0
 ARG CLAUDE_VERSION=2.1.117
 
-# Optional features — gated by overlay compose files so the default image
-# stays lightweight. Set to "1" to enable.
-#   INSTALL_VOICE   — install ffmpeg + whisper.cpp so gt-bot can transcribe
-#                     Telegram voice messages locally. The whisper model
-#                     itself is NOT baked into the image — gt-bot lazy-
-#                     downloads it on the first voice DM (see
-#                     ensureWhisperModel() in bot/bot.js). Enabled by
-#                     docker-compose.voice.yml.
+# Optional feature — gated by an overlay compose file so the default image
+# stays lighter when not needed. Set to "1" to enable.
 #   INSTALL_DOCKER  — install the docker CLI + compose plugin so processes
 #                     inside the container can drive a host-bound docker
 #                     socket. Enabled by docker-compose.docker-host.yml,
 #                     which also bind-mounts /var/run/docker.sock.
-ARG INSTALL_VOICE=0
 ARG INSTALL_DOCKER=0
 
-# Voice add-on: WHISPER_REF pins whisper.cpp. Only consulted when
-# INSTALL_VOICE=1. The default model filename and URL are configured via
-# the WHISPER_MODEL / WHISPER_MODEL_URL_BASE env vars that gt-bot reads
-# at request time.
+# WHISPER_REF pins whisper.cpp. The whisper-cli binary + libs are baked
+# into the image; only the ~75 MB ggml model is lazy-downloaded by gt-bot
+# on the first voice DM (see ensureWhisperModel() in bot/bot.js). The
+# default model filename and URL are configured via the WHISPER_MODEL /
+# WHISPER_MODEL_URL_BASE env vars that gt-bot reads at request time.
 ARG WHISPER_REF=v1.7.5
 
 # GID for the in-container `docker` group. Only used when INSTALL_DOCKER=1.
@@ -72,17 +66,12 @@ RUN git clone --depth 1 --branch "${CROW_REF}" "${CROW_REPO}" crow \
     && rm -rf crow/.git
 
 # -----------------------------------------------------------------------------
-# Stage 1b — voice source. Two stages, selected at build time by INSTALL_VOICE
-# (`0` -> stub, `1` -> real). BuildKit only materializes the stage actually
-# referenced by the runtime, so the heavy whisper.cpp toolchain is pulled
-# only when the voice overlay is active. The runtime always COPYs from
-# `whisper-source`, which aliases to whichever stage INSTALL_VOICE picks.
+# Stage 1b — build whisper.cpp. Only the whisper-cli binary + libs are
+# carried into the runtime stage; the toolchain itself stays out of it.
+# The ggml model file is NOT baked in here — gt-bot lazy-downloads it on
+# the first voice DM (see ensureWhisperModel() in bot/bot.js).
 # -----------------------------------------------------------------------------
-
-# Real builder: clone whisper.cpp and build the CLI. The ggml model file is
-# NOT baked in here — gt-bot lazy-downloads it on the first voice DM. Output
-# is packed into /artifacts/ so the runtime can copy a single tree.
-FROM debian:${DEBIAN_VERSION}-slim AS whisper-1
+FROM debian:${DEBIAN_VERSION}-slim AS whisper-builder
 ARG WHISPER_REF
 
 RUN apt-get update \
@@ -101,24 +90,6 @@ RUN git clone --depth 1 --branch "${WHISPER_REF}" https://github.com/ggerganov/w
     && cmake -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build -j --config Release --target whisper-cli
 
-RUN set -eux; \
-    mkdir -p /artifacts/bin /artifacts/lib; \
-    cp /build/whisper.cpp/build/bin/whisper-cli /artifacts/bin/; \
-    cp /build/whisper.cpp/build/src/libwhisper.so* /artifacts/lib/; \
-    cp /build/whisper.cpp/build/ggml/src/libggml*.so* /artifacts/lib/; \
-    : > /artifacts/.installed
-
-# Stub builder: produces an empty /artifacts/ marked with a sentinel file
-# so the runtime can detect "voice not installed" and skip the install step
-# without erroring on a missing COPY source.
-FROM debian:${DEBIAN_VERSION}-slim AS whisper-0
-RUN mkdir -p /artifacts && : > /artifacts/.skipped
-
-# Stage alias selected by INSTALL_VOICE. Must come AFTER both whisper-0 and
-# whisper-1 are declared so Docker can resolve the dynamic FROM.
-ARG INSTALL_VOICE
-FROM whisper-${INSTALL_VOICE} AS whisper-source
-
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime image. Node + Python + the Gas Town toolchain.
 # -----------------------------------------------------------------------------
@@ -131,7 +102,6 @@ ARG GT_VERSION
 ARG CLAUDE_VERSION
 ARG PYTHON_VERSION
 ARG DOCKER_GID
-ARG INSTALL_VOICE
 ARG INSTALL_DOCKER
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -143,12 +113,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/gastown/wizard:/usr/local/bin:${PATH}"
 
 # --- OS packages -----------------------------------------------------------
-# ffmpeg is omitted here; it ships only with the voice overlay (see the
-# whisper install block below) so the default image stays small.
+# ffmpeg is required by gt-bot to decode Telegram .ogg voice messages
+# before whisper-cli transcribes them.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        ffmpeg \
         git \
         gnupg \
         jq \
@@ -207,31 +178,18 @@ RUN set -eux; \
 RUN npm install -g "@gastown/gt@${GT_VERSION}" \
     && gt --version
 
-# --- voice add-on (whisper.cpp + ffmpeg) ----------------------------------
-# Pulled in only when INSTALL_VOICE=1 (set by docker-compose.voice.yml).
-# Artifacts come from `whisper-source`, which BuildKit resolves to either
-# whisper-1 (real) or whisper-0 (stub with /artifacts/.skipped marker).
-# Only the whisper-cli binary + libs are baked in; the model file (~75 MB)
-# is lazy-downloaded by gt-bot on the first voice DM — see
-# ensureWhisperModel() in bot/bot.js. /opt/whisper/models/ is pre-created
-# below (chown'd to gastown) so the bot can write the downloaded model
-# without needing /opt-write privileges.
-COPY --from=whisper-source /artifacts/ /tmp/whisper-artifacts/
-RUN set -eux; \
-    if [ -f /tmp/whisper-artifacts/.installed ]; then \
-        apt-get update; \
-        apt-get install -y --no-install-recommends ffmpeg; \
-        rm -rf /var/lib/apt/lists/*; \
-        cp /tmp/whisper-artifacts/bin/whisper-cli /usr/local/bin/; \
-        cp /tmp/whisper-artifacts/lib/libwhisper.so* /usr/local/lib/; \
-        cp /tmp/whisper-artifacts/lib/libggml*.so* /usr/local/lib/; \
-        ldconfig; \
-        whisper-cli --help >/dev/null 2>&1; \
-        echo "voice install: whisper-cli + ffmpeg ready (model lazy-downloaded by gt-bot on first voice DM)"; \
-    else \
-        echo "voice install skipped (INSTALL_VOICE=0); gt-bot will fall back to path-only delivery for Telegram voice messages"; \
-    fi; \
-    rm -rf /tmp/whisper-artifacts
+# --- whisper.cpp (local voice transcription) ------------------------------
+# Only the whisper-cli binary + libs are baked in; ffmpeg comes from apt
+# above. The model file (~75 MB) is lazy-downloaded by gt-bot on the first
+# voice DM — see ensureWhisperModel() in bot/bot.js. /opt/whisper/models/
+# is pre-created below (chown'd to gastown) so the bot can write the
+# downloaded model without needing /opt-write privileges.
+COPY --from=whisper-builder /build/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
+# Whisper.cpp ships its libs alongside the binary; copy them into a path
+# the dynamic linker already searches so we don't have to set LD_LIBRARY_PATH.
+COPY --from=whisper-builder /build/whisper.cpp/build/src/libwhisper.so* /usr/local/lib/
+COPY --from=whisper-builder /build/whisper.cpp/build/ggml/src/libggml*.so* /usr/local/lib/
+RUN ldconfig && whisper-cli --help >/dev/null 2>&1 && echo "whisper-cli installed"
 
 # --- docker CLI add-on ----------------------------------------------------
 # Pulled in only when INSTALL_DOCKER=1 (set by docker-compose.docker-host.yml,
