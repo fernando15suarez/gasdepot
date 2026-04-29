@@ -62,7 +62,7 @@ The default install boots gt-bot Telegram bridge + Mayor + Dolt with local voice
 
 | Overlay | What it adds | Trust note |
 | --- | --- | --- |
-| `docker-compose.docker-host.yml` | Installs the docker CLI inside the container and bind-mounts `/var/run/docker.sock`. Lets Mayor (and downstream user projects you build) drive the host docker daemon. | **Effective root-on-host.** Read [`docs/docker-access.md`](docs/docker-access.md) before enabling. Single-operator only. |
+| `docker-compose.docker-host.yml` | Installs the docker CLI inside the container, bind-mounts `/var/run/docker.sock`, and bind-mounts the host's gasDepot checkout at the same path on both sides. Lets Mayor (and downstream user projects you build) drive the host docker daemon AND run `docker compose` against the host's gasdepot project. | **Effective root-on-host.** Read [`docs/docker-access.md`](docs/docker-access.md) before enabling. Single-operator only. |
 
 Stack it with the standard `-f` flag (left-to-right merge — base file first):
 
