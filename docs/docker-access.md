@@ -1,8 +1,10 @@
 # Docker access from inside the container
 
-Docker access is **opt-in** via the `docker-compose.docker-host.yml` overlay. When enabled, the `gastown` container ships with a docker CLI and a bind mount of the host's `/var/run/docker.sock`. This lets Mayor (and anything else running inside the container) drive the host docker daemon directly: build images, start containers, run `docker compose`. The intended use case is letting Mayor spin up a dev container for PR testing — or letting downstream projects you scaffold inside the container drive their own docker stacks — without paste-and-run from the operator.
+Docker access is **opt-in** via the `docker-compose.docker-host.yml` overlay. When enabled, the `gastown` container ships with a docker CLI, a bind mount of the host's `/var/run/docker.sock`, and a bind mount of the host's gasDepot checkout (mounted at the same absolute path on both sides). This lets Mayor (and anything else running inside the container) drive the host docker daemon directly — build images, start containers, run `docker compose` against the host's gasdepot project. The intended use case is letting Mayor spin up a dev container for PR testing or run `docker compose --profile <x> up` to validate compose-profile changes — without paste-and-run from the operator.
 
-The default install (plain `docker compose up`) does **not** include this overlay: no docker CLI, no socket bind, no `docker` group inside the container. You have to deliberately turn it on.
+The same-path bind for the project dir is what makes `docker compose <verb>` work uniformly: compose tracks projects by working_dir + config_files paths, so binding the host project at e.g. `/host/gasdepot` (a different path) would spawn a *different* compose project that wouldn't attach to the existing `gastown` container. Binding at the host path keeps the labels identical between host and Mayor invocations.
+
+The default install (plain `docker compose up`) does **not** include this overlay: no docker CLI, no socket bind, no project bind, no `docker` group inside the container. You have to deliberately turn it on.
 
 ## What this grants
 

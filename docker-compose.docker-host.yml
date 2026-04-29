@@ -27,6 +27,14 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.docker-host.yml \
 #     build --build-arg DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+#
+# GASTOWN_HOST_PROJECT_DIR:
+#   This overlay also bind-mounts the host's gasDepot checkout into the
+#   container at the SAME absolute path on both sides, so Mayor can run
+#   `docker compose` against the same project the host is managing.
+#   Without this, Mayor could only `docker run` standalone containers,
+#   not drive the host's compose stack. Defaults to ${PWD}; override if
+#   you launch compose from outside the project directory.
 
 services:
   gastown:
@@ -40,6 +48,12 @@ services:
         # /var/run/docker.sock isn't owned by GID 988.
         DOCKER_GID: "${DOCKER_GID:-988}"
 
+    # Tell Mayor (and anything else running inside) where the host's
+    # gasDepot checkout lives, so commands that need to refer to it by
+    # path can resolve correctly.
+    environment:
+      GASTOWN_HOST_PROJECT_DIR: ${GASTOWN_HOST_PROJECT_DIR:-${PWD}}
+
     volumes:
       # Host docker socket — what makes `docker compose` inside the
       # container actually drive the host daemon. Without this bind the
@@ -47,3 +61,18 @@ services:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
+
+      # Host gasDepot project dir — bound at the SAME absolute path on both
+      # sides so that when Mayor runs `docker compose` against the host's
+      # gasdepot project, the working_dir and config_files labels resolve
+      # to the same paths the host shell would produce. Without this,
+      # Mayor would either be unable to read the compose YAML at all, or
+      # spawn a *different* compose project (different working_dir hash)
+      # that wouldn't attach to the existing `gastown` container.
+      #
+      # Defaults to ${PWD} (the dir you ran `docker compose up` from);
+      # override with GASTOWN_HOST_PROJECT_DIR if your starter-kit clone
+      # lives elsewhere or you launch compose from outside it.
+      - type: bind
+        source: ${GASTOWN_HOST_PROJECT_DIR:-${PWD}}
+        target: ${GASTOWN_HOST_PROJECT_DIR:-${PWD}}
