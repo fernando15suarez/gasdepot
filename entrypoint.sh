@@ -59,8 +59,15 @@ sync_skills_to_host() {
     # skills/install-gasDepot into it so the host `claude` CLI sees the skill
     # when the user runs /install-gasDepot from the cloned repo directory.
     #
-    # Sentinel file ensures we only sync on first run or when the user explicitly
-    # deletes the sentinel to force a re-sync. Avoids trampling user-edited skills.
+    # Sentinel pins the SHA256 of the last synced SKILL.md. Boots that don't
+    # change the source (typical restart) skip the copy — preserving any
+    # local edits to the host copy. A genuine version bump (new SKILL.md
+    # hash) wins and overwrites: don't customize the shipped skill in place;
+    # fork it under a different name if needed.
+    #
+    # Migrating from the old empty-sentinel format: existing files have no
+    # hash content, which won't match the current source hash, so the next
+    # boot after upgrade triggers a one-time re-sync. Intentional.
     local host_claude="/home/gastown/.claude"
     local skills_src="${GASTOWN_HOME}/skills/install-gasDepot"
     local skills_dst="${host_claude}/skills/install-gasDepot"
@@ -73,7 +80,15 @@ sync_skills_to_host() {
         warn "Host ~/.claude not mounted — skipping skill sync."
         return 0
     fi
-    if [[ -f "${sentinel}" ]]; then
+
+    local src_hash
+    src_hash="$(sha256sum "${skills_src}/SKILL.md" 2>/dev/null | awk '{print $1}')"
+    if [[ -z "${src_hash}" ]]; then
+        warn "Could not hash ${skills_src}/SKILL.md — skipping skill sync."
+        return 0
+    fi
+
+    if [[ -f "${sentinel}" ]] && [[ "$(cat "${sentinel}" 2>/dev/null)" == "${src_hash}" ]]; then
         return 0
     fi
 
@@ -85,7 +100,7 @@ sync_skills_to_host() {
     # `set -euo pipefail` and trapping the container in a boot loop.
     if ! mkdir -p "${skills_dst}" 2>/dev/null \
         || ! cp -f "${skills_src}/SKILL.md" "${skills_dst}/SKILL.md" 2>/dev/null \
-        || ! : >"${sentinel}" 2>/dev/null; then
+        || ! printf '%s\n' "${src_hash}" >"${sentinel}" 2>/dev/null; then
         warn "Could not mirror install-gasDepot skill to ${skills_dst} (likely perm-denied) — continuing."
         return 0
     fi
