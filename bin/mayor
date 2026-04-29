@@ -33,4 +33,4 @@ if ! docker compose ps --status running --services 2>/dev/null | grep -qx gastow
   exit 1
 fi
 
-exec docker compose exec -it gastown gt mayor attach
+exec docker compose exec -it --workdir /gastown/repos/hq gastown gt mayor attach
