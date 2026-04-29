@@ -18,6 +18,10 @@ const PORT = parseInt(process.env.DASHBOARD_PORT || '3338', 10);
 const AUTH_TOKEN = process.env.DASHBOARD_AUTH_TOKEN || '';
 const TARGET_CONTAINER = process.env.GT_TARGET_CONTAINER || 'gastown';
 const TARGET_USER = process.env.GT_TARGET_USER || 'gastown';
+// gt and bd both refuse to run outside a Gas Town workspace, so the docker
+// exec must land inside one. Default matches the workspace path that
+// gastown-starter:latest ships with.
+const TARGET_WORKDIR = process.env.GT_TARGET_WORKDIR || '/gastown/repos/hq';
 const TMUX_SOCKET = process.env.TMUX_SOCKET_PATH || '/tmp/tmux-1000/default';
 const POLL_INTERVAL_MS = parseInt(process.env.DASHBOARD_POLL_MS || '5000', 10);
 
@@ -64,8 +68,15 @@ function spawnCmd(cmd, args, { timeoutMs = 8000 } = {}) {
   });
 }
 
+function buildDockerExecArgs(argv, { user = TARGET_USER, workdir = TARGET_WORKDIR, container = TARGET_CONTAINER } = {}) {
+  const args = ['exec', '-u', user];
+  if (workdir) args.push('-w', workdir);
+  args.push(container, ...argv);
+  return args;
+}
+
 function dockerExec(argv, opts) {
-  return spawnCmd('docker', ['exec', '-u', TARGET_USER, TARGET_CONTAINER, ...argv], opts);
+  return spawnCmd('docker', buildDockerExecArgs(argv), opts);
 }
 
 async function gtStatus() {
@@ -327,7 +338,11 @@ app.get('/events', async (req, res) => {
   tick();
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  // eslint-disable-next-line no-console
-  console.log(`rigs-dashboard listening on :${PORT} target=${TARGET_CONTAINER} auth=${AUTH_TOKEN ? 'on' : 'off'}`);
-});
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    // eslint-disable-next-line no-console
+    console.log(`rigs-dashboard listening on :${PORT} target=${TARGET_CONTAINER} auth=${AUTH_TOKEN ? 'on' : 'off'}`);
+  });
+}
+
+module.exports = { __test: { buildDockerExecArgs } };
