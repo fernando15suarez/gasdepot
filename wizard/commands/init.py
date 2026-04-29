@@ -46,7 +46,7 @@ def run(args: argparse.Namespace) -> int:
     telegram_args = argparse.Namespace(non_interactive=args.non_interactive)
     setup_telegram.run(telegram_args)
 
-    verify_args = argparse.Namespace()
+    verify_args = argparse.Namespace(quiet=False, skip_mail=False)
     rc = verify.run(verify_args)
     if rc != 0:
         ui.warn("Verification found issues — fix them before running `start`.")
