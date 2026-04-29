@@ -419,6 +419,23 @@ stop_mayor() {
     fi
 }
 
+# If GH_TOKEN is in env (typically loaded from .env), wire `gh` as the
+# git credential helper for github.com so `git push` over HTTPS just works
+# without the agent inside the container needing to copy credentials by
+# hand. No-op when GH_TOKEN is empty (read-only setups stay read-only).
+setup_github_auth() {
+    if [[ -z "${GH_TOKEN:-}" ]]; then
+        return 0
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        warn "GH_TOKEN set but gh CLI missing — skipping git credential setup."
+        return 0
+    fi
+    log "Configuring git credential helper for github.com from GH_TOKEN."
+    gh auth setup-git --hostname github.com >/dev/null 2>&1 || \
+        warn "gh auth setup-git failed (continuing — direct git push may need manual auth)."
+}
+
 trap 'stop_mayor; stop_gt_bot; stop_dolt' EXIT
 
 case "${MODE}" in
@@ -426,6 +443,7 @@ case "${MODE}" in
         ensure_dirs
         ensure_env_file
         sync_skills_to_host
+        setup_github_auth
         start_dolt
         ensure_dolt_identity
         check_docker_access
@@ -443,6 +461,7 @@ case "${MODE}" in
         #      come before Mayor tries to read it. Depends on Dolt only.
         #   3. gt-bot — needs Dolt for its own gt_bot DB, does NOT need HQ.
         #   4. Mayor — needs HQ to exist; is the thing gt-bot mails into.
+        setup_github_auth
         start_dolt
         ensure_dolt_identity
         check_docker_access
