@@ -222,47 +222,61 @@ function renderHTML(snap) {
 
   const townHtml = `
     <section class="rig">
-      <h2>Town · ${escHtml(status.name || 'gastown')}</h2>
+      <h2>town core <span class="rig-counts">${townAgents.length}</span></h2>
       <ul class="agents">${townAgents.map((a) => renderAgentRow(a, panes)).join('')}</ul>
     </section>`;
 
-  const rigsHtml = rigs.map((r) => `
+  const rigsHtml = rigs.map((r) => {
+    const n = (r.polecats || []).length;
+    return `
     <section class="rig">
-      <h2>${escHtml(r.name)} <span class="rig-counts">${(r.polecats || []).length} polecats</span></h2>
+      <h2>${escHtml(r.name)} <span class="rig-counts">${n} polecat${n === 1 ? '' : 's'}</span></h2>
       <ul class="agents">${(r.agents || []).map((a) => renderAgentRow(a, panes)).join('')}</ul>
-    </section>`).join('');
+    </section>`;
+  }).join('');
+
+  const townName = (status.name || 'gastown').toUpperCase();
+  const rigCount = rigs.length;
+  const agentCount = townAgents.length + rigs.reduce((n, r) => n + (r.agents || []).length, 0);
 
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gas Town · rigs dashboard</title>
+<title>Gas Town · control room</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header>
-  <h1>Gas Town</h1>
-  <span class="updated" id="updated">last update: ${escHtml(snap.generated_at)}</span>
+  <h1>${escHtml(townName)}</h1>
+  <div class="tag-strip">
+    <span>control room</span>
+    <span class="sep">//</span>
+    <span>${rigCount} rig${rigCount === 1 ? '' : 's'}</span>
+    <span class="sep">//</span>
+    <span>${agentCount} agent${agentCount === 1 ? '' : 's'}</span>
+  </div>
+  <span class="updated" id="updated">${escHtml(snap.generated_at)}</span>
 </header>
 ${errBanner}
 <main>
   ${townHtml}
   ${rigsHtml}
-  <section class="beads">
-    <h2>Beads · in_progress (${beads.in_progress.length})</h2>
-    <ul class="bead-list">${beads.in_progress.map(renderBeadRow).join('') || '<li class="empty">none</li>'}</ul>
+  <section class="beads" data-bucket="in-progress">
+    <h2>work in progress <span class="rig-counts">${beads.in_progress.length}</span></h2>
+    <ul class="bead-list">${beads.in_progress.map(renderBeadRow).join('') || '<li class="empty">idle</li>'}</ul>
   </section>
-  <section class="beads">
-    <h2>Beads · ready (${beads.ready.length})</h2>
-    <ul class="bead-list">${beads.ready.slice(0, 30).map(renderBeadRow).join('') || '<li class="empty">none</li>'}</ul>
+  <section class="beads" data-bucket="ready">
+    <h2>queue <span class="rig-counts">${beads.ready.length}</span></h2>
+    <ul class="bead-list">${beads.ready.slice(0, 30).map(renderBeadRow).join('') || '<li class="empty">empty</li>'}</ul>
   </section>
-  <section class="beads">
-    <h2>Beads · recently closed</h2>
+  <section class="beads" data-bucket="closed">
+    <h2>recently closed</h2>
     <ul class="bead-list">${beads.recent_closed.map(renderBeadRow).join('') || '<li class="empty">none</li>'}</ul>
   </section>
 </main>
-<footer>auto-refreshes every ${Math.round(POLL_INTERVAL_MS / 1000)}s · read-only</footer>
+<footer>read-only telemetry · refresh ${Math.round(POLL_INTERVAL_MS / 1000)}s</footer>
 <script src="/app.js"></script>
 </body>
 </html>`;

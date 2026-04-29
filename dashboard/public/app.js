@@ -83,36 +83,42 @@
       if (pane && newPane) pane.textContent = newPane;
     });
 
-    // Rewrite bead lists. Headings have format "Beads · in_progress (N)".
+    // Rewrite bead lists. Section headings carry semantic data-bucket values
+    // (work-in-progress / queue / closed) so we don't have to string-match on
+    // display text — that lets the design iterate without breaking the
+    // client.
     const beadSections = document.querySelectorAll('section.beads');
     beadSections.forEach((sec) => {
+      const bucket = sec.getAttribute('data-bucket');
       const h = sec.querySelector('h2');
-      if (!h) return;
-      const label = h.textContent || '';
+      const ul = sec.querySelector('ul.bead-list');
+      if (!h || !ul) return;
       let rows = null;
-      let countLabel = null;
-      if (label.indexOf('in_progress') !== -1) {
+      let count = null;
+      let emptyLabel = 'none';
+      if (bucket === 'in-progress') {
         rows = (snap.beads || {}).in_progress || [];
-        countLabel = 'Beads · in_progress (' + rows.length + ')';
-      } else if (label.indexOf('ready') !== -1) {
+        count = rows.length;
+        emptyLabel = 'idle';
+      } else if (bucket === 'ready') {
         const all = (snap.beads || {}).ready || [];
         rows = all.slice(0, 30);
-        countLabel = 'Beads · ready (' + all.length + ')';
-      } else if (label.indexOf('closed') !== -1) {
+        count = all.length;
+        emptyLabel = 'empty';
+      } else if (bucket === 'closed') {
         rows = (snap.beads || {}).recent_closed || [];
-        countLabel = 'Beads · recently closed';
+        count = null; // no count badge
       }
       if (rows == null) return;
-      h.textContent = countLabel;
-      const ul = sec.querySelector('ul.bead-list');
-      if (!ul) return;
+      const countEl = h.querySelector('.rig-counts');
+      if (countEl && count != null) countEl.textContent = String(count);
       ul.innerHTML = rows.length
         ? rows.map(renderBeadRow).join('')
-        : '<li class="empty">none</li>';
+        : '<li class="empty">' + emptyLabel + '</li>';
     });
 
     if (updatedEl && snap.generated_at) {
-      updatedEl.textContent = 'last update: ' + snap.generated_at;
+      updatedEl.textContent = snap.generated_at;
     }
   }
 
