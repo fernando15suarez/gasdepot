@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Attach to Mayor's tmux session inside the gastown container.
+#
+# Usage:
+#   ./bin/mayor                      # from the project root
+#   mayor                            # if symlinked into ~/.local/bin
+#   GASTOWN_PROJECT_DIR=/path mayor  # invoke from outside the project
+#
+# Detach from tmux without killing Mayor with Ctrl+b then d.
+set -euo pipefail
+
+# Resolve the project root: explicit env var > script's grandparent dir > $PWD.
+project_dir="${GASTOWN_PROJECT_DIR:-}"
+if [[ -z "${project_dir}" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  candidate="$(cd "${script_dir}/.." && pwd)"
+  if [[ -f "${candidate}/docker-compose.yml" ]]; then
+    project_dir="${candidate}"
+  else
+    project_dir="${PWD}"
+  fi
+fi
+
+if [[ ! -f "${project_dir}/docker-compose.yml" ]]; then
+  echo "mayor: cannot find docker-compose.yml — set GASTOWN_PROJECT_DIR or run from the project root." >&2
+  exit 1
+fi
+
+cd "${project_dir}"
+
+if ! docker compose ps --status running --services 2>/dev/null | grep -qx gastown; then
+  echo "mayor: gastown container is not running. Start it with: docker compose up -d" >&2
+  exit 1
+fi
+
+exec docker compose exec -it gastown gt mayor attach
