@@ -14,7 +14,15 @@ Tone: short and task-oriented. Narrate what you are about to do in one sentence,
 Run each check; stop with a clear remediation if any fails.
 
 - Confirm you are in the starter-kit repo: `test -f Dockerfile && test -f docker-compose.yml && test -f wizard/gt-wizard`. If missing, tell the user to `cd` to their gasdepot clone.
-- `docker --version` and `which claude` succeed. If Docker is missing, link the user to the prerequisites section of the top-level README.md — do not try to install Docker.
+- `which claude` succeeds. If missing, link the user to the prerequisites section of the top-level README.md — do not try to install Claude.
+- **Docker is reachable without sudo**: `docker info >/dev/null 2>&1`. This catches the common "binary present but socket perms wrong" case. If it fails:
+  - `docker --version` — if missing entirely, tell the user; do not install Docker.
+  - `ls -l /var/run/docker.sock` — if grouped to anything other than `docker` (e.g. `gnome-remote-desktop` on some Ubuntu setups), explain the fix and ask permission to run it via sudo:
+    ```bash
+    sudo chgrp docker /var/run/docker.sock && sudo chmod 660 /var/run/docker.sock
+    ```
+    Note: this resets on reboot. Mention the permanent systemd-drop-in fix (`/etc/systemd/system/docker.socket.d/group.conf` with `SocketGroup=docker`) but don't apply it without explicit ask.
+  - After the perm fix, the current shell's group cache is stale. Run subsequent docker commands via `sg docker -c '...'` for the rest of the install (the user's next shell will pick up the group naturally).
 - `ls ~/.claude` has session files. If missing, tell the user to run `claude login` in another terminal and wait for them to come back.
 
 ## The flow
@@ -70,15 +78,39 @@ CHAT_ID='<id>' && \
 
 Tell the user: *"Got it. Your operator chat id is `<id>`. Building the container now."*
 
-### 3. Build the image
+### 3. Ask about the docker-host overlay (one question, before the build)
+
+Default compose bakes voice tooling in (ffmpeg + whisper.cpp; only the ~75 MB ggml model lazy-downloads on first voice DM), so do NOT ask the user about voice. The only opt-in worth asking about is **docker-host**, because it's a real trust expansion.
+
+Ask the user, verbatim:
+
+> *"Two-question setup. Should Mayor be able to drive Docker on your host? This lets it spin up rigs and dev containers, but also gives the container effective root-on-host access. Single-operator gas town setups usually say yes; multi-tenant or shared hosts should say no. (y/N)"*
+
+If they say yes, persist via `COMPOSE_FILE` so plain `docker compose up` picks up the overlay every time:
+
+```bash
+GID_VAL=$(stat -c '%g' /var/run/docker.sock)
+grep -q '^COMPOSE_FILE=' .env \
+  && sed -i "s|^COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml|" .env \
+  || echo "COMPOSE_FILE=docker-compose.yml:docker-compose.docker-host.yml" >> .env
+grep -q '^DOCKER_GID=' .env \
+  && sed -i "s|^DOCKER_GID=.*|DOCKER_GID=${GID_VAL}|" .env \
+  || echo "DOCKER_GID=${GID_VAL}" >> .env
+```
+
+The `DOCKER_GID` capture matters: the in-container docker group must match the host socket's GID or `docker` calls inside the container hit EACCES.
+
+If they say no, leave `.env` alone — default compose is correct.
+
+### 4. Build the image
 
 Run `docker compose build`. This takes 3–8 minutes on a first build; show the user the progress stream. If the build fails, read the tail of the output and tell the user what broke — do not barrel on to the next step.
 
-### 4. Bring up the stack
+### 5. Bring up the stack
 
 Run `docker compose up -d`. Default CMD is `daemon`, which starts Dolt → configures Dolt identity → installs the HQ → starts gt-bot → launches Deacon + Mayor. `OPERATOR_TELEGRAM_CHAT_ID` is already in `.env` from step 2c, so the entrypoint seeds the bot's admin row on first boot.
 
-### 5. Wait for Mayor to come up
+### 6. Wait for Mayor to come up
 
 Tail the logs and watch for the boot milestones. One easy way:
 ```bash
@@ -92,11 +124,11 @@ docker compose logs --tail=200 gastown
 ```
 Look for errors from `ensure_hq`, `start_gt_bot`, or `start_mayor`. Common culprits: stale Dolt volume (nuke with `docker compose down -v` then rebuild), dolt identity not configured (should be handled by `ensure_dolt_identity`, but check), or port 3307 conflict on the host.
 
-### 6. Verify
+### 7. Verify
 
 Run `docker compose exec gastown gt-wizard verify`. Read each ✓ and ✗ aloud. All REQUIRED checks must be green — including HQ present, Mayor session, and the end-to-end `gt mail send` round-trip. If anything is red, do not declare success. Investigate it.
 
-### 7. End-to-end confirmation
+### 8. End-to-end confirmation
 
 This is the other place you stop for the user.
 
@@ -111,11 +143,36 @@ If Mayor does NOT reply within ~30 seconds, do NOT declare success. Collect diag
 
 Read them and explain what you see. Fix it or escalate.
 
+### 9. Install the `mayor` shortcut
+
+The repo ships `bin/mayor` — a tiny script that wraps `docker compose exec -it gastown gt mayor attach`. Symlink it onto the user's PATH so they can type `mayor` from any shell to drop straight into Mayor's tmux session.
+
+```bash
+mkdir -p "${HOME}/.local/bin"
+ln -sf "${PWD}/bin/mayor" "${HOME}/.local/bin/mayor"
+```
+
+Then check the symlink will be discoverable. If `${HOME}/.local/bin` is already in `PATH`, you're done. If not, tell the user the one line they need to add to their shell rc:
+
+```bash
+case ":${PATH}:" in
+  *":${HOME}/.local/bin:"*) echo "✓ ~/.local/bin already on PATH" ;;
+  *) echo "✗ ~/.local/bin is NOT on PATH. Add this to your ~/.bashrc or ~/.zshrc:"
+     echo '    export PATH="$HOME/.local/bin:$PATH"'
+     echo "Or just run: ./bin/mayor from the project dir." ;;
+esac
+```
+
+Don't edit the user's shell rc for them — surface the line and let them add it.
+
+Tell the user, in their post-install summary: *"Type `mayor` from any shell to attach to Mayor's tmux session. Detach without killing it: Ctrl+b then d."*
+
 ## What now (post-install)
 
 Once Mayor has round-tripped a message, share:
 
 - **Send follow-ups on Telegram.** The bot forwards every authorized message to Mayor.
+- **Attach to Mayor's terminal.** Type `mayor` (or `./bin/mayor` from the project dir) to attach to the live tmux session. Ctrl+b then d to detach without killing it.
 - **Inspect the state.** `docker compose exec gastown gt agents` lists live sessions. `docker compose exec gastown gt dolt status` shows the data plane.
 - **Open a shell.** `docker compose exec gastown bash` drops into the container as the `gastown` user.
 - **Next: build a rig.** Suggest "ask Mayor on Telegram to create a rig for <project>". No example rig is pre-scaffolded.
