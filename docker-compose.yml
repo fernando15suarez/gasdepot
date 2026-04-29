@@ -43,8 +43,8 @@ services:
       args:
         INSTALL_DOCKER: "0"
     image: gastown-starter:latest
-    container_name: gastown
-    hostname: gastown
+    container_name: ${GASTOWN_CONTAINER_NAME:-gastown}
+    hostname: ${GASTOWN_CONTAINER_NAME:-gastown}
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
