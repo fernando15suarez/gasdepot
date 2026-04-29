@@ -286,11 +286,10 @@ app.get('/healthz', (_req, res) => {
   res.type('text/plain').send('ok\n');
 });
 
-app.use((req, res, next) => {
-  if (req.path === '/healthz') return next();
-  return requireAuth(req, res, next);
-});
-
+// Static assets are public. The page <link>s and <script>s reference them
+// without threading the auth token, so the browser would 401 if these were
+// gated. They reveal only the dashboard's existence and feature shape —
+// not any live state, which lives behind / and /snapshot.json.
 app.get('/style.css', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'style.css'));
 });
@@ -298,6 +297,9 @@ app.get('/style.css', (_req, res) => {
 app.get('/app.js', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.js'));
 });
+
+// Everything past here requires the auth token.
+app.use(requireAuth);
 
 app.get('/', async (_req, res) => {
   try {
@@ -359,4 +361,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { __test: { buildDockerExecArgs } };
+module.exports = { app, __test: { buildDockerExecArgs } };

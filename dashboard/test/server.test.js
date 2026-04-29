@@ -14,9 +14,36 @@ const assert = require('node:assert/strict');
 delete process.env.GT_TARGET_USER;
 delete process.env.GT_TARGET_CONTAINER;
 delete process.env.GT_TARGET_WORKDIR;
+process.env.DASHBOARD_AUTH_TOKEN = 'test-token-xyz';
 
-const { __test } = require('../server');
+const http = require('node:http');
+
+const { app, __test } = require('../server');
 const { buildDockerExecArgs } = __test;
+
+// Tiny HTTP helper for the routing tests below — node:test has nothing
+// fancier than fetch in newer node, but we want this to run on node 18+.
+function get(port, path, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ port, path, host: '127.0.0.1', headers }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+  });
+}
+
+async function withServer(fn) {
+  const server = app.listen(0, '127.0.0.1');
+  try {
+    await new Promise((r) => server.once('listening', r));
+    const { port } = server.address();
+    await fn(port);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+}
 
 test('docker exec includes -w so gt/bd land inside a Gas Town workspace', () => {
   // Regression: PR #17 originally shipped without -w. `gt status` and `bd`
@@ -59,4 +86,37 @@ test('omitting workdir skips the -w flag', () => {
   // Defensive: if a future caller explicitly opts out of cwd, builder respects it.
   const args = buildDockerExecArgs(['echo', 'hi'], { workdir: '' });
   assert.strictEqual(args.includes('-w'), false);
+});
+
+test('static assets are public — /style.css and /app.js bypass auth', async () => {
+  // Regression: the page <link>s and <script>s reference these without
+  // threading the auth token, so gating them returned 401 to the browser
+  // and the operator saw an unstyled page on his phone.
+  await withServer(async (port) => {
+    const css = await get(port, '/style.css');
+    assert.strictEqual(css.status, 200, '/style.css must be reachable without a token');
+    assert.match(css.body, /:root|body|font/, 'CSS body should be present');
+
+    const js = await get(port, '/app.js');
+    assert.strictEqual(js.status, 200, '/app.js must be reachable without a token');
+    assert.match(js.body, /EventSource|applySnapshot|snapshot/, 'JS body should be present');
+  });
+});
+
+test('healthz stays public', async () => {
+  await withServer(async (port) => {
+    const r = await get(port, '/healthz');
+    assert.strictEqual(r.status, 200);
+    assert.match(r.body, /ok/);
+  });
+});
+
+test('live data stays gated — /snapshot.json requires the token', async () => {
+  await withServer(async (port) => {
+    const noToken = await get(port, '/snapshot.json');
+    assert.strictEqual(noToken.status, 401, 'no token must 401');
+
+    const wrongToken = await get(port, '/snapshot.json?token=wrong');
+    assert.strictEqual(wrongToken.status, 401, 'wrong token must 401');
+  });
 });
