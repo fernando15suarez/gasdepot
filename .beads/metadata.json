@@ -1,9 +1,7 @@
 {
-  "backend": "dolt",
   "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
   "dolt_database": "hq",
-  "dolt_mode": "server",
-  "dolt_server_host": "127.0.0.1",
-  "dolt_server_port": 3308,
   "project_id": "6c764577-45cc-4a5c-aada-b64b4cc9f49e"
 }
