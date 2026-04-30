@@ -19,7 +19,7 @@ process.env.DASHBOARD_AUTH_TOKEN = 'test-token-xyz';
 const http = require('node:http');
 
 const { app, __test } = require('../server');
-const { buildDockerExecArgs } = __test;
+const { buildDockerExecArgs, snapshot, setDockerExecForTest, resetSnapshotCacheForTest } = __test;
 
 // Tiny HTTP helper for the routing tests below — node:test has nothing
 // fancier than fetch in newer node, but we want this to run on node 18+.
@@ -86,6 +86,43 @@ test('omitting workdir skips the -w flag', () => {
   // Defensive: if a future caller explicitly opts out of cwd, builder respects it.
   const args = buildDockerExecArgs(['echo', 'hi'], { workdir: '' });
   assert.strictEqual(args.includes('-w'), false);
+});
+
+test('snapshot coalesces concurrent callers into one bd-query bundle', async () => {
+  // Regression (ga-312): every SSE client used to drive its own snapshot
+  // pipeline, so N tabs × 4 bd queries / poll piled lock pressure on
+  // dolt-server and pushed gt-bot's `gt mail send` past its 30s timeout.
+  // After coalesce + cache, concurrent snapshot() calls share a single
+  // in-flight pipeline (and reuse its result for the rest of the poll
+  // window), so the underlying bd-query bundle runs exactly once.
+  resetSnapshotCacheForTest();
+  let calls = 0;
+  setDockerExecForTest(async (argv) => {
+    calls++;
+    const bin = argv[0];
+    if (bin === 'gt') {
+      return { code: 0, stdout: JSON.stringify({ name: 'gastown', agents: [], rigs: [] }), stderr: '' };
+    }
+    if (bin === 'bd') {
+      return { code: 0, stdout: JSON.stringify([]), stderr: '' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  });
+  try {
+    const results = await Promise.all([snapshot(), snapshot(), snapshot(), snapshot(), snapshot()]);
+    // The 4 bd-bundle queries (gt status + bd ready + bd list in_progress +
+    // bd list closed) — no pane captures since the stubbed status has no
+    // running agents.
+    assert.strictEqual(calls, 4, `expected 1 coalesced query bundle (4 dockerExec calls), got ${calls}`);
+    // All 5 callers see the SAME snapshot object (object identity, not just shape).
+    for (const r of results) assert.strictEqual(r, results[0]);
+    // Shape is preserved — auth gate, /, /snapshot.json, and the SSE renderer
+    // all rely on this layout.
+    assert.ok('status' in results[0] && 'beads' in results[0] && 'panes' in results[0] && 'generated_at' in results[0]);
+  } finally {
+    setDockerExecForTest(null);
+    resetSnapshotCacheForTest();
+  }
 });
 
 test('static assets are public — /style.css and /app.js bypass auth', async () => {
