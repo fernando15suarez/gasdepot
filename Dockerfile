@@ -302,6 +302,17 @@ RUN echo '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true}' 
 COPY --from=sources --chown=gastown:gastown /src/teletalk /opt/teletalk
 COPY --from=sources --chown=gastown:gastown /src/crow /opt/crow
 
+# Install teletalk's runtime deps into the image so the entrypoint can
+# launch bot.js without doing npm install at boot. Falls back to
+# `npm install` if the upstream repo doesn't ship a package-lock.json
+# (npm ci fails hard without one).
+RUN cd /opt/teletalk \
+    && if [ -f package-lock.json ]; then \
+           npm ci --omit=dev --no-audit --no-fund; \
+       else \
+           npm install --omit=dev --no-audit --no-fund; \
+       fi
+
 # --- the starter kit itself -----------------------------------------------
 # Everything the wizard needs lives in /gastown. User data mounts land here
 # too — see docker-compose.yml for the volume layout.
