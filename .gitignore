@@ -4,3 +4,17 @@
 *.db
 .beads-credential-key
 __pycache__/
+
+# Local node_modules from the dashboard image build context
+dashboard/node_modules/
+
+# Operator secrets — .env carries bot tokens, GH_TOKEN, dashboard auth
+# tokens, and other things that must never end up in commits. The
+# wizard writes .env from .env.example on first run, so a fresh clone
+# never has one tracked, but absent this rule a `git add .` would
+# silently capture it once it exists.
+.env
+
+# Local compose overrides (port rebinds, profile flips for dev poking).
+# Tracked compose files stay authoritative; overrides stay on the host.
+docker-compose.override.yml

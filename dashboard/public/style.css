@@ -1,0 +1,555 @@
+/* Gas Town rigs dashboard — Mad Max control room.
+ * Sodium-amber on blackened-steel. Mono everywhere. Riveted panels.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Oswald:wght@500;600;700&display=swap');
+
+:root {
+  /* Surfaces — warm-tinted darks, like sunbaked metal at night */
+  --bg:        #0b0907;
+  --panel:     #14100c;
+  --panel-2:   #1c1611;
+  --panel-3:   #251c14;
+  --text:      #f3e3c8;
+  --text-dim:  #b8a486;
+  --muted:     #786755;
+  --border:    #3a2c1d;
+  --border-hi: #5a4429;
+
+  /* Sodium / oxide / rust / warning */
+  --amber:     #ffb000;
+  --amber-dim: #b87a00;
+  --rust:      #c5562a;
+  --rust-dim:  #7a3618;
+  --warning:   #ffcb1f;
+  --bone:      #efe3cc;
+
+  /* Status — desaturated so they sit in the palette instead of screaming */
+  --ok:        #9bb05c;
+  --hold:      #d4a73d;
+  --down:      #c2402a;
+
+  /* Stripes */
+  --stripe-a:  #ffcb1f;
+  --stripe-b:  #0b0907;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-feature-settings: 'tnum', 'zero';
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle film grain across the whole interface — breaks the digital flatness */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: 0.06;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* Vignette — sodium glow leaking from above-left */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99;
+  background:
+    radial-gradient(ellipse at 15% 0%, rgba(255, 176, 0, 0.06), transparent 50%),
+    radial-gradient(ellipse at 100% 100%, rgba(197, 86, 42, 0.05), transparent 60%),
+    linear-gradient(180deg, transparent 60%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+/* ─── Header ──────────────────────────────────────────────────────── */
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px 12px;
+  background:
+    linear-gradient(180deg, var(--panel-2) 0%, var(--panel) 100%);
+  border-bottom: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 203, 31, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* Riveted edge along the bottom — repeating dot row */
+header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 4px;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      var(--stripe-a) 0 16px,
+      var(--stripe-b) 16px 32px
+    );
+  opacity: 0.85;
+}
+
+header h1 {
+  margin: 0;
+  font-family: 'Oswald', 'Impact', sans-serif;
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bone);
+  text-shadow: 0 0 18px rgba(255, 176, 0, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+header h1::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow:
+    0 0 10px var(--amber),
+    0 0 22px rgba(255, 176, 0, 0.4),
+    inset 0 0 4px rgba(255, 255, 255, 0.6);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+.tag-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.tag-strip .sep {
+  color: var(--rust);
+  opacity: 0.7;
+}
+
+.updated {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.updated::before {
+  content: 'TX ';
+  color: var(--amber);
+  margin-right: 4px;
+}
+
+/* ─── Errors ──────────────────────────────────────────────────────── */
+
+.err {
+  margin: 16px 20px;
+  padding: 12px 14px 12px 18px;
+  background:
+    linear-gradient(90deg, rgba(194, 64, 42, 0.18), transparent 70%),
+    var(--panel);
+  border: 1px solid var(--down);
+  border-left: 4px solid var(--down);
+  color: #f0c4b6;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  position: relative;
+}
+
+.err::before {
+  content: 'FAULT — ';
+  color: var(--down);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* ─── Main grid ───────────────────────────────────────────────────── */
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+@media (min-width: 980px) {
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    gap: 16px 18px;
+  }
+}
+
+/* ─── Panels ──────────────────────────────────────────────────────── */
+
+section.rig,
+section.beads {
+  position: relative;
+  background:
+    linear-gradient(180deg, var(--panel-2) 0%, var(--panel) 100%);
+  border: 1px solid var(--border);
+  padding: 14px 16px 16px;
+  /* Riveted-corner illusion via inset shadows + a faint inner outline */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 203, 31, 0.04),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 2px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Bolt-heads in each corner */
+section.rig::before,
+section.rig::after,
+section.beads::before,
+section.beads::after {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 30%, var(--border-hi) 0%, var(--bg) 70%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+section.rig::before,  section.beads::before  { top: 6px; left: 6px; }
+section.rig::after,   section.beads::after   { top: 6px; right: 6px; }
+
+section h2 {
+  margin: 2px 0 12px;
+  padding: 0 0 8px;
+  font-family: 'Oswald', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border-bottom: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+section h2::before {
+  content: '▮';
+  color: var(--rust);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.rig-counts {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  text-transform: none;
+}
+
+.rig-counts::before {
+  content: '[ ';
+  color: var(--rust);
+  opacity: 0.6;
+}
+.rig-counts::after {
+  content: ' ]';
+  color: var(--rust);
+  opacity: 0.6;
+}
+
+/* ─── Agent rows ──────────────────────────────────────────────────── */
+
+ul.agents,
+ul.bead-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+li.agent {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border-hi);
+  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: 14px auto auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+li.agent:hover {
+  border-color: var(--amber-dim);
+  border-left-color: var(--amber);
+  background: var(--panel-2);
+}
+
+li.agent .pane {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: #050402;
+  color: #c8b896;
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--rust-dim);
+  font: 11px/1.4 'JetBrains Mono', ui-monospace, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+  position: relative;
+}
+
+/* Scanline overlay for terminal panes */
+li.agent .pane::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 176, 0, 0.025) 0 1px,
+      transparent 1px 3px
+    );
+}
+
+/* Status indicator — gauge lamp, not just a dot */
+.dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.6);
+  position: relative;
+}
+
+.dot-green {
+  background: var(--ok);
+  box-shadow:
+    0 0 8px rgba(155, 176, 92, 0.8),
+    inset 0 0 3px rgba(255, 255, 255, 0.4),
+    0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.dot-yellow {
+  background: var(--hold);
+  box-shadow:
+    0 0 8px rgba(212, 167, 61, 0.7),
+    inset 0 0 3px rgba(255, 255, 255, 0.3),
+    0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.dot-red {
+  background: var(--down);
+  box-shadow:
+    0 0 8px rgba(194, 64, 42, 0.7),
+    inset 0 0 3px rgba(255, 255, 255, 0.2),
+    0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.agent-name {
+  font-weight: 600;
+  color: var(--bone);
+  letter-spacing: 0.04em;
+}
+
+.agent-role {
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.agent-session {
+  color: var(--rust);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+.agent-session::before {
+  content: '@ ';
+  color: var(--muted);
+}
+
+.work-flag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--amber);
+  padding: 2px 8px;
+  border: 1px solid var(--amber-dim);
+  box-shadow:
+    0 0 10px rgba(255, 176, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.work-flag::before {
+  content: '⚠ ';
+}
+
+/* ─── Bead rows ───────────────────────────────────────────────────── */
+
+li.bead {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--rust-dim);
+  padding: 6px 12px;
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  transition: border-color 160ms ease;
+}
+
+li.bead:hover {
+  border-color: var(--amber-dim);
+  border-left-color: var(--rust);
+}
+
+.bead-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--rust);
+  letter-spacing: 0.04em;
+}
+
+.bead-title {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bead-assignee {
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.prio {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.prio-0 {
+  color: var(--down);
+  border-color: var(--down);
+  background: rgba(194, 64, 42, 0.1);
+  text-shadow: 0 0 6px rgba(194, 64, 42, 0.5);
+}
+.prio-1 {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: rgba(255, 203, 31, 0.08);
+  text-shadow: 0 0 5px rgba(255, 203, 31, 0.4);
+}
+.prio-2 {
+  color: var(--amber);
+  border-color: var(--amber-dim);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 8px 4px;
+  text-align: center;
+}
+
+.empty::before { content: '— '; opacity: 0.6; }
+.empty::after  { content: ' —'; opacity: 0.6; }
+
+/* ─── Footer ──────────────────────────────────────────────────────── */
+
+footer {
+  padding: 24px 16px 32px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  position: relative;
+}
+
+footer::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80px;
+  height: 2px;
+  background: var(--rust);
+  opacity: 0.5;
+}
+
+/* ─── Scrollbar ───────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-hi);
+  border: 2px solid var(--panel);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--rust);
+}

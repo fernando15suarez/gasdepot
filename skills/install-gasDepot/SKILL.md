@@ -78,13 +78,15 @@ CHAT_ID='<id>' && \
 
 Tell the user: *"Got it. Your operator chat id is `<id>`. Building the container now."*
 
-### 3. Ask about the docker-host overlay (one question, before the build)
+### 3. Setup choices before the build
 
-Default compose bakes voice tooling in (ffmpeg + whisper.cpp; only the ~75 MB ggml model lazy-downloads on first voice DM), so do NOT ask the user about voice. The only opt-in worth asking about is **docker-host**, because it's a real trust expansion.
+Default compose bakes voice tooling in (ffmpeg + whisper.cpp; only the ~75 MB ggml model lazy-downloads on first voice DM), so do NOT ask the user about voice. Two opt-ins worth asking about: **docker-host** (real trust expansion) and **rigs-dashboard** (extra container, read-only).
+
+#### 3a. Docker-host overlay
 
 Ask the user, verbatim:
 
-> *"Two-question setup. Should Mayor be able to drive Docker on your host? This lets it spin up rigs and dev containers, but also gives the container effective root-on-host access. Single-operator gas town setups usually say yes; multi-tenant or shared hosts should say no. (y/N)"*
+> *"Should Mayor be able to drive Docker on your host? This lets it spin up rigs and dev containers, but also gives the container effective root-on-host access. Single-operator gas town setups usually say yes; multi-tenant or shared hosts should say no. (y/N)"*
 
 If they say yes, persist via `COMPOSE_FILE` so plain `docker compose up` picks up the overlay every time:
 
@@ -102,13 +104,65 @@ The `DOCKER_GID` capture matters: the in-container docker group must match the h
 
 If they say no, leave `.env` alone — default compose is correct.
 
+#### 3b. Rigs dashboard
+
+Print this verbatim, including the explicit `y/N` (default no):
+
+> Optional features (any can be enabled later by editing `docker-compose.yml`):
+>
+>   rigs-dashboard — read-only webpage at http://localhost:3338 showing what
+>   your rigs/agents/beads are doing. Useful for "is Mayor bricked?" at a
+>   glance. Adds one extra container; otherwise inert.
+>
+> Enable rigs-dashboard? \[y/N\] (default: no)
+
+Treat any response that is NOT one of `y`, `Y`, `yes`, or `YES` as no — including
+empty input, `n`, `no`, or anything ambiguous. Do NOT assume yes from silence.
+
+**If the user says yes:**
+
+1. Generate a 32-char random token (no echoing it back unmasked):
+   ```bash
+   TOKEN="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+   grep -q '^DASHBOARD_AUTH_TOKEN=' .env \
+     && sed -i "s|^DASHBOARD_AUTH_TOKEN=.*|DASHBOARD_AUTH_TOKEN=${TOKEN}|" .env \
+     || echo "DASHBOARD_AUTH_TOKEN=${TOKEN}" >> .env
+   ```
+2. Append `dashboard` to `COMPOSE_PROFILES` in `.env` (preserve any other
+   profiles already set):
+   ```bash
+   if grep -q '^COMPOSE_PROFILES=' .env; then
+     # Append only if not already present.
+     grep -q '^COMPOSE_PROFILES=.*\bdashboard\b' .env \
+       || sed -i 's|^COMPOSE_PROFILES=\(.*\)|COMPOSE_PROFILES=\1,dashboard|' .env
+   else
+     echo 'COMPOSE_PROFILES=dashboard' >> .env
+   fi
+   ```
+3. Tell the user the URL and token: *"Dashboard will come up at
+   http://localhost:3338?token=`<token>`. The token is in your `.env` as
+   `DASHBOARD_AUTH_TOKEN`."*
+
+**If the user says no:** do nothing. The compose service is profile-gated, so
+it stays inert. Tell them: *"Skipping. You can flip this on later by setting
+`COMPOSE_PROFILES=dashboard` in `.env` and running `docker compose up -d`."*
+
 ### 4. Build the image
 
 Run `docker compose build`. This takes 3–8 minutes on a first build; show the user the progress stream. If the build fails, read the tail of the output and tell the user what broke — do not barrel on to the next step.
 
+If the user opted into the dashboard in step 3b, also build the dashboard image:
+```bash
+docker compose --profile dashboard build rigs-dashboard
+```
+
 ### 5. Bring up the stack
 
 Run `docker compose up -d`. Default CMD is `daemon`, which starts Dolt → configures Dolt identity → installs the HQ → starts gt-bot → launches Deacon + Mayor. `OPERATOR_TELEGRAM_CHAT_ID` is already in `.env` from step 2c, so the entrypoint seeds the bot's admin row on first boot.
+
+If the user opted into the dashboard in step 3b, the dashboard container comes
+up alongside `gastown` automatically (the `COMPOSE_PROFILES=dashboard` line
+in `.env` activates the profile).
 
 ### 6. Wait for Mayor to come up
 
@@ -127,6 +181,13 @@ Look for errors from `ensure_hq`, `start_gt_bot`, or `start_mayor`. Common culpr
 ### 7. Verify
 
 Run `docker compose exec gastown gt-wizard verify`. Read each ✓ and ✗ aloud. All REQUIRED checks must be green — including HQ present, Mayor session, and the end-to-end `gt mail send` round-trip. If anything is red, do not declare success. Investigate it.
+
+If the user opted into the dashboard, also probe it:
+```bash
+curl -fsS http://localhost:3338/healthz
+```
+That should return `ok`. If it doesn't, run `docker compose ps rigs-dashboard`
+and `docker compose logs --tail=80 rigs-dashboard` to diagnose.
 
 ### 8. End-to-end confirmation
 
@@ -175,6 +236,7 @@ Once Mayor has round-tripped a message, share:
 - **Attach to Mayor's terminal.** Type `mayor` (or `./bin/mayor` from the project dir) to attach to the live tmux session. Ctrl+b then d to detach without killing it.
 - **Inspect the state.** `docker compose exec gastown gt agents` lists live sessions. `docker compose exec gastown gt dolt status` shows the data plane.
 - **Open a shell.** `docker compose exec gastown bash` drops into the container as the `gastown` user.
+- **Dashboard (if opted in).** Open `http://localhost:3338?token=<token>`; it shows a live read-only view of rigs, agents, and beads.
 - **Next: build a rig.** Suggest "ask Mayor on Telegram to create a rig for <project>". No example rig is pre-scaffolded.
 
 ## Common snags (diagnose, do not delegate)

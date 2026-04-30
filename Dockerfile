@@ -172,6 +172,27 @@ RUN set -eux; \
     rm -rf "${tmpdir}"; \
     bd --version
 
+# --- gh (GitHub CLI) -------------------------------------------------------
+# Lets agents inside the container fetch PRs, push fixes, comment, and review
+# without needing the operator to copy GH credentials in by hand. Reads
+# GH_TOKEN from env at runtime (see .env.example).
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+      amd64) gh_arch=amd64 ;; \
+      arm64) gh_arch=arm64 ;; \
+      *) echo "unsupported arch: ${arch}"; exit 1 ;; \
+    esac; \
+    GH_VERSION=2.66.1; \
+    tmpdir="$(mktemp -d)"; \
+    curl -fsSL -o "${tmpdir}/gh.tgz" \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz"; \
+    tar -xzf "${tmpdir}/gh.tgz" -C "${tmpdir}"; \
+    mv "${tmpdir}/gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" /usr/local/bin/gh; \
+    chmod +x /usr/local/bin/gh; \
+    rm -rf "${tmpdir}"; \
+    gh --version
+
 # --- gt (Gas Town CLI) -----------------------------------------------------
 # Published as an npm package. Pinning to a specific version keeps surprises
 # out of image rebuilds.

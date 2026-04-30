@@ -43,8 +43,8 @@ services:
       args:
         INSTALL_DOCKER: "0"
     image: gastown-starter:latest
-    container_name: gastown
-    hostname: gastown
+    container_name: ${GASTOWN_CONTAINER_NAME:-gastown}
+    hostname: ${GASTOWN_CONTAINER_NAME:-gastown}
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -108,6 +108,38 @@ services:
     # Dolt's goroutine dumps live in the log; `gt dolt status` needs to see
     # the PID file, so we give the process a predictable working dir.
     working_dir: /gastown
+
+  # Optional read-only status webpage for the rigs/agents/beads. Opt-in via
+  # `docker compose --profile dashboard up -d`. Default `up -d` skips it.
+  # See dashboard/Dockerfile and dashboard/server.js.
+  rigs-dashboard:
+    profiles: ["dashboard"]
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: gastown-rigs-dashboard:latest
+    container_name: gastown-dashboard
+    restart: unless-stopped
+    depends_on:
+      - gastown
+    ports:
+      # Localhost-only by default; operator can SSH-tunnel for remote access.
+      - "127.0.0.1:3338:3338"
+    environment:
+      DASHBOARD_AUTH_TOKEN: ${DASHBOARD_AUTH_TOKEN:-}
+      GT_TARGET_CONTAINER: gastown
+    volumes:
+      # Read-only docker socket so we can `docker exec gastown ...` for
+      # gt/bd/tmux queries without reaching into the container's filesystem.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3338/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   gastown-dolt-data:
