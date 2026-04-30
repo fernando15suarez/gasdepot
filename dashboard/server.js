@@ -75,8 +75,11 @@ function buildDockerExecArgs(argv, { user = TARGET_USER, workdir = TARGET_WORKDI
   return args;
 }
 
+const realDockerExec = (argv, opts) => spawnCmd('docker', buildDockerExecArgs(argv), opts);
+let dockerExecImpl = realDockerExec;
+
 function dockerExec(argv, opts) {
-  return spawnCmd('docker', buildDockerExecArgs(argv), opts);
+  return dockerExecImpl(argv, opts);
 }
 
 async function gtStatus() {
@@ -153,26 +156,54 @@ function flattenAgents(status) {
   return all;
 }
 
+// Each snapshot() call fans out to 4 bd queries plus per-agent tmux pane
+// captures. Without coalescing+caching, every connected SSE client (and every
+// browser tab) drives its own pipeline every POLL_INTERVAL_MS, multiplying
+// dolt-server lock pressure linearly with viewers. Two viewers were enough to
+// push gt-bot's `gt mail send` past its 30s timeout (ga-312).
+//
+// pendingSnapshot: while a fetch is in flight, every concurrent caller awaits
+// the same promise (so N tabs ticking at the same instant trigger one fetch).
+//
+// lastSnapshot/lastSnapshotAt: hold the most recent result for slightly less
+// than POLL_INTERVAL_MS so staggered ticks within the same poll window also
+// reuse it. The 500ms guard ensures the cached value expires *before* the
+// next scheduled tick, so we always serve fresh state on schedule.
+let pendingSnapshot = null;
+let lastSnapshot = null;
+let lastSnapshotAt = 0;
+
 async function snapshot() {
-  const [status, ready, inprog, recent] = await Promise.all([
-    gtStatus(),
-    bdReady(),
-    bdInProgress(),
-    bdRecentClosed(),
-  ]);
-  const agents = flattenAgents(status);
-  const panes = {};
-  await Promise.all(agents.slice(0, 24).map(async (a) => {
-    if (!a.session || !a.running) return;
-    const pane = await capturePane(a.session, 12);
-    if (pane) panes[a.session] = pane;
-  }));
-  return {
-    status,
-    beads: { ready, in_progress: inprog, recent_closed: recent },
-    panes,
-    generated_at: new Date().toISOString(),
-  };
+  if (lastSnapshot && Date.now() - lastSnapshotAt < POLL_INTERVAL_MS - 500) {
+    return lastSnapshot;
+  }
+  if (pendingSnapshot) return pendingSnapshot;
+  pendingSnapshot = (async () => {
+    const [status, ready, inprog, recent] = await Promise.all([
+      gtStatus(),
+      bdReady(),
+      bdInProgress(),
+      bdRecentClosed(),
+    ]);
+    const agents = flattenAgents(status);
+    const panes = {};
+    await Promise.all(agents.slice(0, 24).map(async (a) => {
+      if (!a.session || !a.running) return;
+      const pane = await capturePane(a.session, 12);
+      if (pane) panes[a.session] = pane;
+    }));
+    const snap = {
+      status,
+      beads: { ready, in_progress: inprog, recent_closed: recent },
+      panes,
+      generated_at: new Date().toISOString(),
+    };
+    lastSnapshot = snap;
+    lastSnapshotAt = Date.now();
+    return snap;
+  })();
+  try { return await pendingSnapshot; }
+  finally { pendingSnapshot = null; }
 }
 
 function renderBeadRow(b) {
@@ -361,4 +392,16 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, __test: { buildDockerExecArgs } };
+module.exports = {
+  app,
+  __test: {
+    buildDockerExecArgs,
+    snapshot,
+    setDockerExecForTest(fn) { dockerExecImpl = fn || realDockerExec; },
+    resetSnapshotCacheForTest() {
+      pendingSnapshot = null;
+      lastSnapshot = null;
+      lastSnapshotAt = 0;
+    },
+  },
+};
