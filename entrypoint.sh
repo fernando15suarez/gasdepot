@@ -36,6 +36,9 @@ GT_BOT_LOG="${GASTOWN_HOME}/logs/gt-bot.log"
 GT_BOT_PID="${GASTOWN_HOME}/logs/gt-bot.pid"
 GT_START_LOG="${GASTOWN_HOME}/logs/gt-start.log"
 GT_START_PID="${GASTOWN_HOME}/logs/gt-start.pid"
+TELETALK_DIR="${TELETALK_DIR:-/opt/teletalk}"
+TELETALK_LOG="${GASTOWN_HOME}/logs/teletalk.log"
+TELETALK_PID="${GASTOWN_HOME}/logs/teletalk.pid"
 MAYOR_SESSION="hq-mayor"
 MAYOR_WAIT_SECONDS="${MAYOR_WAIT_SECONDS:-30}"
 
@@ -338,6 +341,46 @@ stop_gt_bot() {
     fi
 }
 
+# teletalk is optional. Starts only if TELETALK_BOT_TOKEN is configured.
+# bot.js reads TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — translate from
+# .env's TELETALK_BOT_TOKEN / OPERATOR_TELEGRAM_CHAT_ID at launch instead
+# of renaming keys (which would break existing operator .env files).
+start_teletalk() {
+    if [[ -z "${TELETALK_BOT_TOKEN:-}" ]]; then
+        log "teletalk: no TELETALK_BOT_TOKEN set — skipping (set one in .env to enable)."
+        return 0
+    fi
+    if [[ ! -d "${TELETALK_DIR}" ]]; then
+        warn "teletalk: ${TELETALK_DIR} missing — skipping (rebuild the image to vendor it)."
+        return 0
+    fi
+    if [[ ! -d "${TELETALK_DIR}/node_modules" ]]; then
+        warn "teletalk: ${TELETALK_DIR}/node_modules missing — skipping (rebuild the image; npm install belongs in the Dockerfile, not at boot)."
+        return 0
+    fi
+
+    log "teletalk: starting on port ${TELETALK_PORT:-3334}..."
+    (cd "${TELETALK_DIR}" && nohup env \
+        TELEGRAM_BOT_TOKEN="${TELETALK_BOT_TOKEN}" \
+        TELEGRAM_CHAT_ID="${OPERATOR_TELEGRAM_CHAT_ID:-}" \
+        WHISPER_BIN=whisper-cli \
+        node "${TELETALK_DIR}/bot.js" \
+        >"${TELETALK_LOG}" 2>&1 &
+    echo $! >"${TELETALK_PID}")
+}
+
+stop_teletalk() {
+    if [[ -f "${TELETALK_PID}" ]]; then
+        local pid; pid="$(cat "${TELETALK_PID}")"
+        if kill -0 "${pid}" 2>/dev/null; then
+            log "Stopping teletalk (pid ${pid})..."
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+        rm -f "${TELETALK_PID}"
+    fi
+}
+
 # Create (or refresh) the Gas Town HQ at HQ_ROOT so `gt mail send mayor/`
 # and friends have a workspace to operate in. Idempotent via `--force` —
 # which re-runs install in an existing HQ without clobbering town.json or
@@ -436,7 +479,7 @@ setup_github_auth() {
         warn "gh auth setup-git failed (continuing — direct git push may need manual auth)."
 }
 
-trap 'stop_mayor; stop_gt_bot; stop_dolt' EXIT
+trap 'stop_mayor; stop_gt_bot; stop_teletalk; stop_dolt' EXIT
 
 case "${MODE}" in
     wizard)
@@ -448,6 +491,7 @@ case "${MODE}" in
         ensure_dolt_identity
         check_docker_access
         start_gt_bot
+        start_teletalk
         log "Launching wizard — run \`gt-wizard --help\` for individual commands."
         exec "${GASTOWN_HOME}/wizard/gt-wizard" init
         ;;
@@ -468,10 +512,11 @@ case "${MODE}" in
         auto_detect_operator_chat_id
         ensure_hq
         start_gt_bot
+        start_teletalk
         start_mayor
-        log "Daemon mode — tailing Dolt + gt-bot + gt-start logs. Ctrl+C to exit."
-        touch "${DOLT_LOG}" "${GT_BOT_LOG}" "${GT_START_LOG}"
-        exec tail -F "${DOLT_LOG}" "${GT_BOT_LOG}" "${GT_START_LOG}"
+        log "Daemon mode — tailing Dolt + gt-bot + teletalk + gt-start logs. Ctrl+C to exit."
+        touch "${DOLT_LOG}" "${GT_BOT_LOG}" "${TELETALK_LOG}" "${GT_START_LOG}"
+        exec tail -F "${DOLT_LOG}" "${GT_BOT_LOG}" "${TELETALK_LOG}" "${GT_START_LOG}"
         ;;
     shell)
         ensure_dirs
