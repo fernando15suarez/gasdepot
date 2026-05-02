@@ -3,7 +3,9 @@
 Separate from `init` so the skill can send users here directly when they want
 to rotate tokens or add the operator chat ID after the fact.
 
-gt-bot (`GT_BOT_TOKEN`) is the one required bot. TeleTalk and Crow are optional
+gt-bot (`GT_BOT_TOKEN`) is the bot for the Telegram bridge. The bridge is
+opt in (skipped by default in `init`); reaching this command means the user
+wants gt-bot, so the token is required here. TeleTalk and Crow are optional
 add-ons — the user can press enter to skip them and fill them in later.
 """
 
@@ -38,13 +40,12 @@ def register(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> int:
     ui.header("Telegram bots")
     ui.info(
-        "gt-bot is Gas Town's default Telegram bridge — you need one bot for it. "
-        "Create it by chatting with @BotFather on Telegram (`/newbot`) and paste "
-        "the token below."
+        "gt-bot is the Gas Town Telegram bridge. Create one bot by chatting "
+        "with @BotFather on Telegram (`/newbot`) and paste the token below."
     )
     ui.info(
-        "TeleTalk and Crow are optional add-ons. Press enter at their prompts to "
-        "skip — you can set them later by re-running `gt-wizard setup-telegram`."
+        "TeleTalk and Crow are optional add ons. Press enter at their prompts "
+        "to skip; you can set them later by running `gt-wizard setup-telegram` again."
     )
 
     env = EnvFile.load()

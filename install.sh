@@ -140,7 +140,7 @@ ok "Stack is up."
 # --- launch wizard ---------------------------------------------------------
 
 step "Launching wizard"
-info "The wizard walks you through Telegram + Claude token entry."
+info "The wizard walks you through Claude auth and (optionally) Telegram token entry."
 info "Re-run any time with: ${COMPOSE} exec -it gastown gt-wizard init"
 
 exec ${COMPOSE} exec -it gastown gt-wizard init

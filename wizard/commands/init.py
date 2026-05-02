@@ -8,6 +8,7 @@ Crow. Safe to re-run — each step is idempotent.
 from __future__ import annotations
 
 import argparse
+import os
 
 from lib import ui
 from lib.env import EnvFile
@@ -15,7 +16,7 @@ from lib.env import EnvFile
 from . import setup_telegram, start, verify
 
 NAME = "init"
-HELP = "Run the full onboarding flow (idempotent — safe to re-run)."
+HELP = "Run the full onboarding flow (idempotent, safe to re-run)."
 
 
 def register(parser: argparse.ArgumentParser) -> None:
@@ -27,11 +28,11 @@ def register(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    ui.header("gasDepot — install")
+    ui.header("gasDepot install")
 
     ui.info(
-        "This flow will: collect your Telegram bot tokens, verify Claude auth, "
-        "and explain how to start Mayor / TeleTalk / Crow."
+        "This flow will verify Claude auth, set up your git identity, and "
+        "(optionally) configure the gt-bot Telegram bridge."
     )
 
     env = EnvFile.load()
@@ -41,10 +42,18 @@ def run(args: argparse.Namespace) -> int:
     _collect_overlays(env, non_interactive=args.non_interactive)
     env.save()
 
-    # Delegate Telegram to the dedicated primitive so the skill can also call
-    # it directly without going through `init`.
-    telegram_args = argparse.Namespace(non_interactive=args.non_interactive)
-    setup_telegram.run(telegram_args)
+    # gt-bot is opt in. Most users now drive Gas Town via Claude Code remote
+    # control and skip Telegram entirely. Only run setup_telegram when the
+    # user explicitly says yes (interactive) or sets GT_WIZARD_ENABLE_GT_BOT=1
+    # (non-interactive override for scripts).
+    if _wants_gt_bot(env, args.non_interactive):
+        telegram_args = argparse.Namespace(non_interactive=args.non_interactive)
+        setup_telegram.run(telegram_args)
+    else:
+        ui.info(
+            "Skipping gt-bot setup. Run `gt-wizard add-bot` later if you "
+            "want the Telegram bridge."
+        )
 
     verify_args = argparse.Namespace(quiet=False, skip_mail=False)
     rc = verify.run(verify_args)
@@ -56,6 +65,21 @@ def run(args: argparse.Namespace) -> int:
     ui.info("Run `gt-wizard start` to launch Mayor, TeleTalk, and Crow.")
     ui.info("Or, inside Claude Code, continue the conversation with the install-gasDepot skill.")
     return 0
+
+
+def _wants_gt_bot(env: EnvFile, non_interactive: bool) -> bool:
+    # Already configured? Treat that as an existing user who wants the bot.
+    if env.get("GT_BOT_TOKEN"):
+        return True
+
+    if non_interactive:
+        return os.environ.get("GT_WIZARD_ENABLE_GT_BOT") == "1"
+
+    return ui.confirm(
+        "Set up the gt-bot Telegram bridge? Most users now drive Gas Town "
+        "via Claude Code remote control and skip this.",
+        default=False,
+    )
 
 
 def _collect_anthropic(env: EnvFile, non_interactive: bool) -> None:
@@ -110,9 +134,8 @@ _DOCKER_HOST_OVERLAY = "docker-compose.docker-host.yml"
 def _collect_overlays(env: EnvFile, non_interactive: bool) -> None:
     ui.header("Optional features")
     ui.info(
-        "The default install boots gt-bot Telegram bridge + Mayor + Dolt "
-        "with local voice transcription baked in. The only opt-in is "
-        "host docker access (defaults to off)."
+        "The default install boots Mayor + Dolt. gt-bot Telegram bridge and "
+        "host docker access are both opt in (default off)."
     )
 
     existing = env.get("COMPOSE_FILE") or ""

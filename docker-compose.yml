@@ -1,8 +1,10 @@
 # Gas Town Starter Kit — single-service compose.
 #
-# Default stack: gt-bot Telegram bridge + Mayor + Dolt, with local voice
-# transcription baked in (ffmpeg + whisper.cpp; only the ~75 MB ggml model
-# lazy-downloads on first voice DM). One opt-in overlay is available:
+# Default stack: Mayor + Dolt, with local voice transcription baked in
+# (ffmpeg + whisper.cpp; only the ~75 MB ggml model lazy-downloads on first
+# voice DM). gt-bot Telegram bridge is opt in via GT_BOT_TOKEN — the
+# entrypoint launches it on container boot when the token is set.
+# One opt-in overlay is available:
 #
 #   docker-compose.docker-host.yml  — bind /var/run/docker.sock + install the
 #                                     docker CLI inside the container so Mayor

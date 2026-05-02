@@ -1,6 +1,6 @@
 ---
 name: install-gasDepot
-description: Autonomous installer for gasDepot. Use this skill when the user has just cloned the starter-kit repo and wants to stand up Mayor with gt-bot (the default Telegram bridge). Runs the wizard and docker commands on the user's behalf; only pauses for inputs the user must supply (BotFather token, Telegram message to confirm the round-trip). Only runs in an environment where the user is sitting in the starter-kit repo.
+description: Autonomous installer for gasDepot. Use this skill when the user has just cloned the starter-kit repo and wants to stand up Mayor. Default install is Mayor + Dolt only; the skill asks whether the user wants the gt-bot Telegram bridge and skips BotFather entirely if they say no. Runs the wizard and docker commands on the user's behalf; only pauses for inputs the user must supply (Claude auth confirmation, optional BotFather token if they opted in). Only runs in an environment where the user is sitting in the starter-kit repo.
 ---
 
 # install-gasDepot
@@ -29,15 +29,34 @@ Run each check; stop with a clear remediation if any fails.
 
 Do these in order. Do NOT ask the user to run any of these themselves.
 
+### 0. Decide whether to install the gt-bot Telegram bridge
+
+Before any setup, ask the user, verbatim:
+
+> *"Do you want the gt-bot Telegram bridge? Most users now drive Gas Town from inside Claude Code via remote control and skip Telegram entirely. Saying no skips BotFather and the chat id step. (y/N)"*
+
+Treat any response that is NOT one of `y`, `Y`, `yes`, or `YES` as no, including empty input, `n`, `no`, or anything ambiguous. Do NOT assume yes from silence.
+
+Remember the answer for the rest of the flow:
+
+- **If yes**: run step 2 (BotFather token + chat id), and at step 8 do the Telegram round trip.
+- **If no**: SKIP step 2 entirely (no BotFather, no chat id), and at step 8 do the Claude Code remote control confirmation instead.
+
+All other steps run the same way regardless of the answer.
+
 ### 1. Prepare `.env`
 
 Run `cp -n .env.example .env` (no-clobber). Check whether `GT_BOT_TOKEN` is already set:
 ```bash
 grep -E '^GT_BOT_TOKEN=.+' .env
 ```
-If it is populated, skip to step 3.
+If it is populated, skip to step 3 (and treat the user as a yes for step 0 even if they said no, since gt-bot will start anyway).
+
+If the user said NO at step 0, skip to step 3 right now; do NOT run step 2.
 
 ### 2. Collect the BotFather token AND the operator chat id
+
+Skip this entire step if the user said NO at step 0.
 
 Two user interactions here — the rest of step 2 you do yourself.
 
@@ -191,9 +210,11 @@ and `docker compose logs --tail=80 rigs-dashboard` to diagnose.
 
 ### 8. End-to-end confirmation
 
-This is the other place you stop for the user.
+This is the other place you stop for the user. Branch on the gt-bot decision from step 0.
 
-Tell them: *"Send one more message to the bot on Telegram now — Mayor should reply. Let me know what you see."*
+**If the user said YES at step 0** (gt-bot is installed):
+
+Tell them: *"Send one more message to the bot on Telegram now. Mayor should reply. Let me know what you see."*
 
 If Mayor replies: install is complete. Give them the short "What now" list below.
 
@@ -203,6 +224,20 @@ If Mayor does NOT reply within ~30 seconds, do NOT declare success. Collect diag
 - `docker compose exec gastown gt agents`
 
 Read them and explain what you see. Fix it or escalate.
+
+**If the user said NO at step 0** (no gt-bot):
+
+There is no Telegram round trip to run. Confirm Mayor is reachable from Claude Code instead.
+
+Tell them: *"Mayor is up. From inside Claude Code on the host, talk to it via the remote control feature; that is your primary chat surface. If you want to add the Telegram bridge later, run `docker compose exec gastown gt-wizard add-bot`."*
+
+Verify Mayor is healthy:
+```bash
+docker compose exec gastown gt agents
+```
+The output should list a `mayor` session. If it does not, do NOT declare success; pull `docker compose logs --tail=200 gastown` and diagnose.
+
+Once Mayor's session shows up: install is complete. Give them the short "What now" list below.
 
 ### 9. Install the `mayor` shortcut
 
@@ -230,14 +265,15 @@ Tell the user, in their post-install summary: *"Type `mayor` from any shell to a
 
 ## What now (post-install)
 
-Once Mayor has round-tripped a message, share:
+Once Mayor is reachable, share:
 
-- **Send follow-ups on Telegram.** The bot forwards every authorized message to Mayor.
+- **Talk to Mayor.** If the user opted into gt-bot, follow ups on Telegram forward every authorized message to Mayor. Otherwise Mayor lives behind Claude Code remote control on the host; that is the primary chat surface.
 - **Attach to Mayor's terminal.** Type `mayor` (or `./bin/mayor` from the project dir) to attach to the live tmux session. Ctrl+b then d to detach without killing it.
 - **Inspect the state.** `docker compose exec gastown gt agents` lists live sessions. `docker compose exec gastown gt dolt status` shows the data plane.
 - **Open a shell.** `docker compose exec gastown bash` drops into the container as the `gastown` user.
 - **Dashboard (if opted in).** Open `http://localhost:3338?token=<token>`; it shows a live read-only view of rigs, agents, and beads.
-- **Next: build a rig.** Suggest "ask Mayor on Telegram to create a rig for <project>". No example rig is pre-scaffolded.
+- **Add gt-bot later.** If the user said no at step 0 and changes their mind, point them at `docker compose exec gastown gt-wizard add-bot`.
+- **Next: build a rig.** Suggest "ask Mayor to create a rig for <project>". No example rig is pre scaffolded.
 
 ## Common snags (diagnose, do not delegate)
 
